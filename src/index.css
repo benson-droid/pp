@@ -281,6 +281,56 @@ canvas.crop-cursor {
   width: 100%;
 }
 
+.tone-curve-svg {
+  display: block;
+  background: #0e0f12;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  touch-action: none;
+}
+
+.tone-curve-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.tone-curve-identity {
+  stroke: #3a3d47;
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.tone-curve-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.tone-curve-point {
+  fill: var(--bg);
+  stroke: var(--accent);
+  stroke-width: 2;
+  cursor: pointer;
+}
+
+.tone-curve-point:hover {
+  fill: var(--accent);
+}
+
+.tone-curve-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 11px;
+}
+
+.tone-curve-footer button {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
 .reset-all {
   width: 100%;
 }
