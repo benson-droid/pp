@@ -40,7 +40,7 @@ export default function PhotoGrid({
 
 function PhotoThumbnail({ photo, onOpen }: { photo: PhotoEntry; onOpen: () => void }) {
   const [url, setUrl] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const urlRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -56,8 +56,9 @@ function PhotoThumbnail({ photo, onOpen }: { photo: PhotoEntry; onOpen: () => vo
         setUrl(objectUrl);
       })
       .catch((err) => {
+        const message = (err as Error)?.message || String(err);
         console.error(`Failed to decode thumbnail for ${photo.name}`, err);
-        if (!cancelled) setFailed(true);
+        if (!cancelled) setError(message);
       });
     return () => {
       cancelled = true;
@@ -67,12 +68,12 @@ function PhotoThumbnail({ photo, onOpen }: { photo: PhotoEntry; onOpen: () => vo
   }, [photo.name]);
 
   return (
-    <button className="photo-tile" onClick={onOpen} title={photo.name}>
+    <button className="photo-tile" onClick={onOpen} title={error ?? photo.name}>
       <div className="photo-tile-image">
         {url ? (
           <img src={url} alt={photo.name} loading="lazy" />
-        ) : failed ? (
-          <span className="muted">Failed to decode</span>
+        ) : error ? (
+          <span className="muted decode-error">{error}</span>
         ) : (
           <span className="muted">Loading…</span>
         )}
