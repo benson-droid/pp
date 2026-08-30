@@ -132,6 +132,14 @@ button.active {
   display: block;
 }
 
+.decode-error {
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 8px;
+  text-align: center;
+  color: var(--warning);
+}
+
 .photo-tile-caption {
   padding: 8px 10px;
   display: flex;
