@@ -97,11 +97,17 @@ export async function decodeJpegBytes(bytes: Uint8Array): Promise<DecodedImage> 
 }
 
 export function bitmapToDecodedImage(bitmap: ImageBitmap): DecodedImage {
-  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+  // Capture dimensions before close() — closing an ImageBitmap neuters it,
+  // and its width/height getters report 0 afterward. Reading them after
+  // close() (as this used to) silently produced a DecodedImage with correct
+  // pixel data but width/height of 0, which then failed confusingly
+  // downstream (e.g. `new ImageData(rgba, 0, height)` throwing).
+  const { width, height } = bitmap;
+  const canvas = new OffscreenCanvas(width, height);
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Could not get 2D context for decode canvas');
   ctx.drawImage(bitmap, 0, 0);
-  const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+  const imageData = ctx.getImageData(0, 0, width, height);
   bitmap.close();
-  return { width: bitmap.width, height: bitmap.height, rgba: imageData.data };
+  return { width, height, rgba: imageData.data };
 }
