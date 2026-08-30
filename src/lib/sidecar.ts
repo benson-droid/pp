@@ -3,10 +3,14 @@ import type { EditRecipe } from '../types';
 import { defaultEditRecipe } from '../types';
 import { readSidecarText, writeSidecarText } from './fileAccess';
 
+/** `dirHandle` is `null` in single-file mode (photos opened via "Open
+ * Files…" rather than "Open Folder…"), where there's no directory to write
+ * a sidecar into — edits there exist only in memory for the session. */
 export async function loadEditRecipe(
-  dirHandle: FileSystemDirectoryHandle,
+  dirHandle: FileSystemDirectoryHandle | null,
   sidecarName: string,
 ): Promise<EditRecipe> {
+  if (!dirHandle) return defaultEditRecipe();
   const text = await readSidecarText(dirHandle, sidecarName);
   if (!text) return defaultEditRecipe();
   try {
@@ -20,10 +24,11 @@ export async function loadEditRecipe(
 }
 
 export async function saveEditRecipe(
-  dirHandle: FileSystemDirectoryHandle,
+  dirHandle: FileSystemDirectoryHandle | null,
   sidecarName: string,
   recipe: EditRecipe,
 ): Promise<void> {
+  if (!dirHandle) return; // Single-file mode: nothing to persist to.
   await writeSidecarText(dirHandle, sidecarName, JSON.stringify(recipe, null, 2));
 }
 
