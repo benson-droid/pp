@@ -5,12 +5,14 @@ import { decodeFull } from '../lib/imageDecode';
 import { loadEditRecipe, saveEditRecipe } from '../lib/sidecar';
 import { ColorRenderer, applyGeometry, renderFull } from '../lib/glPipeline';
 import { canvasToBlob } from '../lib/canvasUtils';
-import { writeExportedFile } from '../lib/fileAccess';
+import { saveBlobWithPicker, writeExportedFile } from '../lib/fileAccess';
 import Slider from './Slider';
 
 interface EditorProps {
   photo: PhotoEntry;
-  dirHandle: FileSystemDirectoryHandle;
+  /** `null` in single-file mode (no folder handle) — edits aren't
+   * auto-saved, and export prompts for a save location each time. */
+  dirHandle: FileSystemDirectoryHandle | null;
   onClose: () => void;
   onSaved: () => void;
 }
@@ -182,11 +184,23 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
       const blob = await canvasToBlob(geo.canvas, 'image/jpeg', 0.92);
       const baseName = photo.name.replace(/\.[^.]+$/, '');
       const fileName = `${baseName}.jpg`;
-      await writeExportedFile(dirHandle, fileName, blob);
-      setExportMessage(`Saved edited/${fileName}`);
+      if (dirHandle) {
+        await writeExportedFile(dirHandle, fileName, blob);
+        setExportMessage(`Saved edited/${fileName}`);
+      } else {
+        // Single-file mode: no folder to write into, so prompt for a
+        // save location instead.
+        await saveBlobWithPicker(blob, fileName);
+        setExportMessage(`Saved ${fileName}`);
+      }
     } catch (err) {
-      console.error(err);
-      setExportMessage(`Export failed: ${(err as Error).message}`);
+      // AbortError happens when the user just closes the save dialog.
+      if ((err as DOMException)?.name === 'AbortError') {
+        setExportMessage(null);
+      } else {
+        console.error(err);
+        setExportMessage(`Export failed: ${(err as Error).message}`);
+      }
     } finally {
       setExporting(false);
     }
@@ -208,6 +222,11 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
         <button onClick={onClose}>&larr; Back to grid</button>
         <strong>{photo.name}</strong>
         <div className="editor-header-actions">
+          {!dirHandle && (
+            <span className="muted" title="Opened as a single file, not a folder — edits aren't auto-saved. Export when you're done.">
+              Edits not auto-saved
+            </span>
+          )}
           {exportMessage && <span className="muted">{exportMessage}</span>}
           <button onClick={handleExport} disabled={exporting || loading || !!error}>
             {exporting ? 'Exporting…' : 'Export JPEG'}
