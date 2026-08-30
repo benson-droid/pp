@@ -1,0 +1,278 @@
+:root {
+  --text: #cfd2d6;
+  --text-h: #f4f5f7;
+  --bg: #16171b;
+  --panel-bg: #1d1e23;
+  --border: #2e303a;
+  --accent: #4d9fff;
+  --accent-bg: rgba(77, 159, 255, 0.15);
+  --warning: #ff8a65;
+  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, Consolas, monospace;
+
+  font: 15px/1.5 var(--sans);
+  color-scheme: dark;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+#root {
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+}
+
+h1 {
+  font-size: 28px;
+  color: var(--text-h);
+  margin: 0 0 8px;
+}
+
+p {
+  margin: 0 0 12px;
+}
+
+.muted {
+  color: #8a8d96;
+}
+
+.warning {
+  color: var(--warning);
+}
+
+button {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.active {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+/* --- Folder picker --------------------------------------------------- */
+
+.folder-picker {
+  max-width: 520px;
+  margin: auto;
+  padding: 32px;
+  text-align: center;
+}
+
+.folder-picker button {
+  padding: 10px 24px;
+  font-size: 15px;
+}
+
+/* --- Grid view --------------------------------------------------------- */
+
+.photo-grid-view {
+  padding: 20px 28px;
+  flex: 1;
+}
+
+.grid-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.photo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 14px;
+}
+
+.photo-tile {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+  text-align: left;
+  background: var(--panel-bg);
+}
+
+.photo-tile-image {
+  aspect-ratio: 3 / 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0e0f12;
+  overflow: hidden;
+}
+
+.photo-tile-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.photo-tile-caption {
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.edited-badge {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+/* --- Editor view --------------------------------------------------------- */
+
+.editor-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 100svh;
+}
+
+.editor-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.editor-header strong {
+  flex: 1;
+  color: var(--text-h);
+}
+
+.editor-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.editor-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.editor-canvas-area {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  min-width: 0;
+  background: #0e0f12;
+}
+
+.canvas-wrap {
+  position: relative;
+  max-width: 100%;
+  max-height: 80svh;
+}
+
+.canvas-wrap canvas {
+  max-width: 100%;
+  max-height: 80svh;
+  display: block;
+  border-radius: 2px;
+}
+
+canvas.crop-cursor {
+  cursor: crosshair;
+}
+
+.crop-overlay {
+  position: absolute;
+  border: 1.5px dashed #fff;
+  background: rgba(255, 255, 255, 0.12);
+  pointer-events: none;
+}
+
+.editor-panel {
+  width: 320px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.panel-section {
+  margin-bottom: 20px;
+}
+
+.panel-section-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #8a8d96;
+  margin-bottom: 10px;
+}
+
+.button-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.button-row button {
+  flex: 1;
+}
+
+.slider-row {
+  display: block;
+  margin-bottom: 10px;
+}
+
+.slider-row-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+
+.slider-value {
+  color: #8a8d96;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.slider-row input[type='range'] {
+  width: 100%;
+}
+
+.reset-all {
+  width: 100%;
+}
