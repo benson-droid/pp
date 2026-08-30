@@ -2,6 +2,13 @@
  * Core data types shared across the app.
  */
 
+/** One control point on the tone curve, in normalized 0..1 input/output
+ * space (x = input tone, y = output tone). */
+export interface CurvePoint {
+  x: number;
+  y: number;
+}
+
 /** A single nondestructive edit "recipe" for one photo — mirrors the idea of
  * a Lightroom XMP sidecar: the original file is never modified, only this
  * small JSON is written/read next to it. */
@@ -18,6 +25,11 @@ export interface EditRecipe {
   tint: number; // -100..100, relative green/magenta shift
   saturation: number; // -100..100
   vibrance: number; // -100..100
+
+  /** Tone curve control points, applied identically to R/G/B after the
+   * basic tone adjustments above and before saturation/vibrance. Always has
+   * at least 2 points spanning x=0..x=1; see src/lib/toneCurve.ts. */
+  curve: CurvePoint[];
 
   /** Rotation in 90-degree steps: 0, 1, 2, or 3 (clockwise). */
   rotation: 0 | 1 | 2 | 3;
@@ -40,6 +52,10 @@ export function defaultEditRecipe(): EditRecipe {
     tint: 0,
     saturation: 0,
     vibrance: 0,
+    curve: [
+      { x: 0, y: 0 },
+      { x: 1, y: 1 },
+    ],
     rotation: 0,
     crop: null,
   };
