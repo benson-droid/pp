@@ -10,7 +10,27 @@ export async function decodeThumbnail(photo: PhotoEntry): Promise<DecodedImage> 
   if (photo.kind === 'raw') {
     return decodeRawThumbnail(bytes);
   }
-  const bitmap = await createImageBitmap(new Blob([new Uint8Array(bytes)]));
+  return decodeStandardImage(bytes);
+}
+
+/** Decodes a plain JPEG/PNG byte buffer via the browser's built-in image
+ * decoder. Note: Chromium's decoder can't handle CMYK-encoded JPEGs (a
+ * format some scanning/printing services export) — it throws an
+ * `EncodingError` for those rather than silently converting to RGB. There's
+ * no browser-level workaround for that; it would need a JS-based JPEG
+ * decoder with CMYK support swapped in here instead. */
+async function decodeStandardImage(bytes: Uint8Array): Promise<DecodedImage> {
+  const blob = new Blob([new Uint8Array(bytes)], { type: 'image/jpeg' });
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(blob);
+  } catch (err) {
+    throw new Error(
+      `Browser couldn't decode this image (${(err as Error).message || err}). ` +
+        `If it's a CMYK-color JPEG (common from scanning/printing services), ` +
+        `that's a known browser limitation, not something re-opening the file fixes.`,
+    );
+  }
   return bitmapToDecodedImage(bitmap);
 }
 
@@ -25,6 +45,5 @@ export async function decodeFull(
   if (photo.kind === 'raw') {
     return decodeRawFull(bytes, opts);
   }
-  const bitmap = await createImageBitmap(new Blob([new Uint8Array(bytes)]));
-  return bitmapToDecodedImage(bitmap);
+  return decodeStandardImage(bytes);
 }
