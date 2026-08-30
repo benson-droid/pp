@@ -12,6 +12,14 @@ export function isFileSystemAccessSupported(): boolean {
   return typeof window !== 'undefined' && 'showDirectoryPicker' in window;
 }
 
+export function isOpenFilePickerSupported(): boolean {
+  return typeof window !== 'undefined' && 'showOpenFilePicker' in window;
+}
+
+export function isSaveFilePickerSupported(): boolean {
+  return typeof window !== 'undefined' && 'showSaveFilePicker' in window;
+}
+
 function extensionOf(name: string): string {
   const dot = name.lastIndexOf('.');
   return dot === -1 ? '' : name.slice(dot + 1).toLowerCase();
@@ -37,6 +45,52 @@ export async function pickFolderAndListPhotos(): Promise<{
   const dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
   const photos = await listPhotos(dirHandle);
   return { dirHandle, photos };
+}
+
+/** Ask the user to pick one or more individual photo files, instead of a
+ * whole folder. There's no directory handle in this mode, so callers can't
+ * write a sidecar or an "edited/" export next to the originals — edits
+ * exist only for the current session, and export prompts for a save
+ * location each time (see `saveBlobWithPicker`). */
+export async function pickFiles(): Promise<PhotoEntry[]> {
+  const handles = await window.showOpenFilePicker({
+    multiple: true,
+    excludeAcceptAllOption: false,
+    types: [
+      {
+        description: 'Photos',
+        accept: { 'image/*': ['.nef', '.NEF', '.jpg', '.JPG', '.jpeg', '.JPEG'] },
+      },
+    ],
+  });
+
+  const photos: PhotoEntry[] = [];
+  for (const handle of handles) {
+    const kind = kindOf(handle.name);
+    if (!kind) continue;
+    photos.push({
+      name: handle.name,
+      kind,
+      fileHandle: handle,
+      sidecarName: sidecarNameFor(handle.name),
+      hasEdits: false,
+    });
+  }
+  photos.sort((a, b) => a.name.localeCompare(b.name));
+  return photos;
+}
+
+/** Used for exporting in single-file mode, where there's no folder handle
+ * to write an "edited/" subfolder into — the user is prompted for a save
+ * location each time instead. */
+export async function saveBlobWithPicker(blob: Blob, suggestedName: string): Promise<void> {
+  const handle = await window.showSaveFilePicker({
+    suggestedName,
+    types: [{ description: 'JPEG image', accept: { 'image/jpeg': ['.jpg'] } }],
+  });
+  const writable = await handle.createWritable();
+  await writable.write(blob);
+  await writable.close();
 }
 
 export async function listPhotos(dirHandle: FileSystemDirectoryHandle): Promise<PhotoEntry[]> {
