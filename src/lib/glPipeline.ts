@@ -14,6 +14,7 @@
  * the constants by eye against real photos is expected as this evolves.
  */
 import type { DecodedImage, EditRecipe } from '../types';
+import { buildCurveLUT } from './toneCurve';
 
 const VERTEX_SHADER = `#version 300 es
 in vec2 aPosition;
@@ -31,6 +32,7 @@ in vec2 vTexCoord;
 out vec4 outColor;
 
 uniform sampler2D uTexture;
+uniform sampler2D uCurveLUT;
 uniform float uExposure;
 uniform float uContrast;
 uniform float uHighlights;
@@ -74,6 +76,14 @@ void main() {
   float contrast = 1.0 + uContrast / 100.0;
   color = (color - 0.5) * contrast + 0.5;
 
+  // Tone curve: applied identically to each channel. uCurveLUT is a 256x1
+  // texture (CLAMP_TO_EDGE + LINEAR), so values outside [0,1] — e.g. from
+  // the exposure boost above — sample the curve's end value rather than
+  // wrapping, and neighboring LUT entries blend smoothly.
+  color.r = texture(uCurveLUT, vec2(color.r, 0.5)).r;
+  color.g = texture(uCurveLUT, vec2(color.g, 0.5)).r;
+  color.b = texture(uCurveLUT, vec2(color.b, 0.5)).r;
+
   // Saturation: global mix toward luminance.
   float gray = dot(color, vec3(0.299, 0.587, 0.114));
   float sat = 1.0 + uSaturation / 100.0;
@@ -108,6 +118,7 @@ function compileShader(gl: WebGL2RenderingContext, type: number, source: string)
 
 interface Uniforms {
   uTexture: WebGLUniformLocation;
+  uCurveLUT: WebGLUniformLocation;
   uExposure: WebGLUniformLocation;
   uContrast: WebGLUniformLocation;
   uHighlights: WebGLUniformLocation;
@@ -128,6 +139,7 @@ export class ColorRenderer {
   private gl: WebGL2RenderingContext;
   private program: WebGLProgram;
   private texture: WebGLTexture;
+  private curveTexture: WebGLTexture;
   private uniforms: Uniforms;
   private currentImageKey: DecodedImage | null = null;
 
@@ -169,6 +181,20 @@ export class ColorRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
+    // Tone curve LUT: a 256x1 single-channel texture, bound to texture
+    // unit 1 (the image stays on unit 0). LINEAR filtering smoothly
+    // interpolates between adjacent LUT entries instead of stair-stepping.
+    const curveTex = gl.createTexture();
+    if (!curveTex) throw new Error('Failed to create curve LUT texture');
+    this.curveTexture = curveTex;
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, curveTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.activeTexture(gl.TEXTURE0);
+
     const getLoc = (name: string): WebGLUniformLocation => {
       const loc = gl.getUniformLocation(program, name);
       if (!loc) throw new Error(`Missing uniform ${name}`);
@@ -176,6 +202,7 @@ export class ColorRenderer {
     };
     this.uniforms = {
       uTexture: getLoc('uTexture'),
+      uCurveLUT: getLoc('uCurveLUT'),
       uExposure: getLoc('uExposure'),
       uContrast: getLoc('uContrast'),
       uHighlights: getLoc('uHighlights'),
@@ -200,6 +227,7 @@ export class ColorRenderer {
     gl.viewport(0, 0, image.width, image.height);
     gl.useProgram(this.program);
 
+    gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
     if (this.currentImageKey !== image) {
       gl.texImage2D(
@@ -216,6 +244,16 @@ export class ColorRenderer {
       this.currentImageKey = image;
     }
     gl.uniform1i(this.uniforms.uTexture, 0);
+
+    // Curve LUT is cheap (256 bytes) to rebuild and re-upload on every
+    // render, including mid-drag — no need to cache/diff against the
+    // previous recipe.
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.curveTexture);
+    const lut = buildCurveLUT(recipe.curve);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, lut.length, 1, 0, gl.RED, gl.UNSIGNED_BYTE, lut);
+    gl.uniform1i(this.uniforms.uCurveLUT, 1);
+
     gl.uniform1f(this.uniforms.uExposure, recipe.exposure);
     gl.uniform1f(this.uniforms.uContrast, recipe.contrast);
     gl.uniform1f(this.uniforms.uHighlights, recipe.highlights);
