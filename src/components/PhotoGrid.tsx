@@ -8,6 +8,9 @@ interface PhotoGridProps {
   onOpen: (photo: PhotoEntry) => void;
   onPickAnotherFolder: () => void;
   folderName: string;
+  /** Shown next to the photo count — used to flag single-file mode, where
+   * edits aren't auto-saved (see FolderPicker/App). */
+  note?: string;
 }
 
 export default function PhotoGrid({
@@ -15,6 +18,7 @@ export default function PhotoGrid({
   onOpen,
   onPickAnotherFolder,
   folderName,
+  note,
 }: PhotoGridProps) {
   return (
     <div className="photo-grid-view">
@@ -22,11 +26,12 @@ export default function PhotoGrid({
         <div>
           <strong>{folderName}</strong>
           <span className="muted"> · {photos.length} photos</span>
+          {note && <span className="muted"> · {note}</span>}
         </div>
-        <button onClick={onPickAnotherFolder}>Open a different folder</button>
+        <button onClick={onPickAnotherFolder}>Open something else</button>
       </header>
       {photos.length === 0 ? (
-        <p className="muted">No .NEF or .jpg files found in this folder.</p>
+        <p className="muted">No .NEF or .jpg files found.</p>
       ) : (
         <div className="photo-grid">
           {photos.map((photo) => (
