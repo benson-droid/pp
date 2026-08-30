@@ -7,6 +7,7 @@ import { ColorRenderer, applyGeometry, renderFull } from '../lib/glPipeline';
 import { canvasToBlob } from '../lib/canvasUtils';
 import { saveBlobWithPicker, writeExportedFile } from '../lib/fileAccess';
 import Slider from './Slider';
+import ToneCurve from './ToneCurve';
 
 interface EditorProps {
   photo: PhotoEntry;
@@ -312,6 +313,11 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
               max={100}
               onChange={(v) => updateRecipe({ blacks: v })}
             />
+          </div>
+
+          <div className="panel-section">
+            <div className="panel-section-title">Tone Curve</div>
+            <ToneCurve points={recipe.curve} onChange={(curve) => updateRecipe({ curve })} />
           </div>
 
           <div className="panel-section">
