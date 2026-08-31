@@ -25,7 +25,7 @@ export function defaultCurve(): CurvePoint[] {
   ];
 }
 
-function clamp01(v: number): number {
+export function clamp01(v: number): number {
   return Math.min(1, Math.max(0, v));
 }
 
