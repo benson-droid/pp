@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import type { CurvePoint } from '../types';
 import {
   addPoint,
+  clamp01,
   computeTangents,
   defaultCurve,
   evalCurve,
@@ -20,13 +21,18 @@ const POINT_RADIUS = 5;
 
 /** A draggable tone curve editor, styled after the point-curve tool in
  * Lightroom/Camera Raw: a diagonal identity line, a grid, and up to
- * MAX_POINTS control points. Click empty space to add a point, drag a
- * point to move it, double-click an interior point to remove it. The two
- * endpoints are fixed horizontally (x=0 and x=1) and can only move
- * vertically, matching how most tools handle curve endpoints. */
+ * MAX_POINTS control points. Click-and-drag anywhere on the graph in one
+ * motion to place a point and immediately pull it into position (or just
+ * click to drop one and drag it after); drag an existing point to move it;
+ * double-click an interior point to remove it. The two endpoints are fixed
+ * horizontally (x=0 and x=1) and only move vertically, matching how most
+ * tools handle curve endpoints. */
 export default function ToneCurve({ points, onChange }: ToneCurveProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
+  // x of a point just created by a background click, so the same
+  // press-drag-release gesture can keep moving it (see handleBackground*).
+  const pendingXRef = useRef<number | null>(null);
 
   function pointerToNorm(e: { clientX: number; clientY: number }): { x: number; y: number } {
     const rect = svgRef.current!.getBoundingClientRect();
@@ -38,7 +44,24 @@ export default function ToneCurve({ points, onChange }: ToneCurveProps) {
   function handleBackgroundPointerDown(e: React.PointerEvent<SVGRectElement>) {
     const { x, y } = pointerToNorm(e);
     const next = addPoint(points, x, y);
-    if (next !== points) onChange(next);
+    if (next === points) return; // too close to an existing point, or at MAX_POINTS
+    pendingXRef.current = clamp01(x);
+    onChange(next);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+
+  function handleBackgroundPointerMove(e: React.PointerEvent<SVGRectElement>) {
+    if (pendingXRef.current === null) return;
+    const { y } = pointerToNorm(e);
+    const idx = points.findIndex((p) => Math.abs(p.x - pendingXRef.current!) < 1e-6);
+    if (idx === -1) return;
+    onChange(movePoint(points, idx, points[idx].x, y));
+  }
+
+  function handleBackgroundPointerUp(e: React.PointerEvent<SVGRectElement>) {
+    if (pendingXRef.current === null) return;
+    pendingXRef.current = null;
+    e.currentTarget.releasePointerCapture(e.pointerId);
   }
 
   function handlePointDown(index: number, e: React.PointerEvent<SVGCircleElement>) {
@@ -89,7 +112,7 @@ export default function ToneCurve({ points, onChange }: ToneCurveProps) {
         ))}
         {/* Identity reference diagonal */}
         <line x1={0} y1={SIZE} x2={SIZE} y2={0} className="tone-curve-identity" />
-        {/* Background hit area for adding points */}
+        {/* Background hit area for adding + one-motion placing points */}
         <rect
           x={0}
           y={0}
@@ -97,6 +120,8 @@ export default function ToneCurve({ points, onChange }: ToneCurveProps) {
           height={SIZE}
           fill="transparent"
           onPointerDown={handleBackgroundPointerDown}
+          onPointerMove={handleBackgroundPointerMove}
+          onPointerUp={handleBackgroundPointerUp}
         />
         {/* The curve itself */}
         <polyline points={pathPoints.join(' ')} className="tone-curve-line" />
@@ -116,7 +141,7 @@ export default function ToneCurve({ points, onChange }: ToneCurveProps) {
         ))}
       </svg>
       <div className="tone-curve-footer">
-        <span className="muted">Click to add · drag to move · double-click to remove</span>
+        <span className="muted">Drag to add &amp; shape · double-click a point to remove</span>
         {!isDefaultCurve(points) && <button onClick={() => onChange(defaultCurve())}>Reset curve</button>}
       </div>
     </div>
