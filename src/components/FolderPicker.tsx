@@ -34,9 +34,9 @@ export default function FolderPicker({ onPickFolder, onPickFiles, error }: Folde
         </button>
       </div>
       <p className="muted" style={{ marginTop: 12 }}>
-        Opening individual files skips auto-saved edits and the "edited/" export folder — you'll
-        pick a save location when exporting each one. Open a folder if you want edits to persist
-        automatically between visits.
+        Edits are saved automatically in this browser either way. Opening a folder additionally
+        gives exports a home ("edited/" next to your originals) — opening individual files
+        prompts for a save location each time you export instead.
       </p>
     </div>
   );
