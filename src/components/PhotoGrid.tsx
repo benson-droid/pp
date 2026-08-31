@@ -2,31 +2,22 @@ import { useEffect, useRef, useState } from 'react';
 import type { PhotoEntry } from '../types';
 import { decodeThumbnail } from '../lib/imageDecode';
 import { decodedImageToThumbnailUrl } from '../lib/canvasUtils';
+import { hasCatalogRecipe } from '../lib/catalog';
 
 interface PhotoGridProps {
   photos: PhotoEntry[];
   onOpen: (photo: PhotoEntry) => void;
   onPickAnotherFolder: () => void;
   folderName: string;
-  /** Shown next to the photo count — used to flag single-file mode, where
-   * edits aren't auto-saved (see FolderPicker/App). */
-  note?: string;
 }
 
-export default function PhotoGrid({
-  photos,
-  onOpen,
-  onPickAnotherFolder,
-  folderName,
-  note,
-}: PhotoGridProps) {
+export default function PhotoGrid({ photos, onOpen, onPickAnotherFolder, folderName }: PhotoGridProps) {
   return (
     <div className="photo-grid-view">
       <header className="grid-header">
         <div>
           <strong>{folderName}</strong>
           <span className="muted"> · {photos.length} photos</span>
-          {note && <span className="muted"> · {note}</span>}
         </div>
         <button onClick={onPickAnotherFolder}>Open something else</button>
       </header>
@@ -46,6 +37,7 @@ export default function PhotoGrid({
 function PhotoThumbnail({ photo, onOpen }: { photo: PhotoEntry; onOpen: () => void }) {
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [edited, setEdited] = useState(false);
   const urlRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -65,6 +57,11 @@ function PhotoThumbnail({ photo, onOpen }: { photo: PhotoEntry; onOpen: () => vo
         console.error(`Failed to decode thumbnail for ${photo.name}`, err);
         if (!cancelled) setError(message);
       });
+    hasCatalogRecipe(photo)
+      .then((v) => {
+        if (!cancelled) setEdited(v);
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
       if (urlRef.current) URL.revokeObjectURL(urlRef.current);
@@ -85,7 +82,7 @@ function PhotoThumbnail({ photo, onOpen }: { photo: PhotoEntry; onOpen: () => vo
       </div>
       <div className="photo-tile-caption">
         <span>{photo.name}</span>
-        {photo.hasEdits && <span className="edited-badge">Edited</span>}
+        {edited && <span className="edited-badge">Edited</span>}
       </div>
     </button>
   );
