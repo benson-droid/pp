@@ -6,13 +6,19 @@ import { loadEditRecipe, saveEditRecipe } from '../lib/sidecar';
 import { ColorRenderer, applyGeometry, renderFull } from '../lib/glPipeline';
 import { canvasToBlob } from '../lib/canvasUtils';
 import { saveBlobWithPicker, writeExportedFile } from '../lib/fileAccess';
+import { computeHistogram, type HistogramData } from '../lib/histogram';
+import { copyRecipeToClipboard, hasClipboardRecipe, pasteRecipeOnto } from '../lib/editClipboard';
 import Slider from './Slider';
 import ToneCurve from './ToneCurve';
+import ColorWheel from './ColorWheel';
+import HSLMixerPanel from './HSLMixer';
+import Histogram from './Histogram';
 
 interface EditorProps {
   photo: PhotoEntry;
-  /** `null` in single-file mode (no folder handle) — edits aren't
-   * auto-saved, and export prompts for a save location each time. */
+  /** `null` in single-file mode (no folder handle). Edits persist either
+   * way (see lib/catalog.ts) — this is only used for legacy sidecar
+   * migration and for where "Export" writes the result. */
   dirHandle: FileSystemDirectoryHandle | null;
   onClose: () => void;
   onSaved: () => void;
@@ -29,15 +35,18 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [exportMessage, setExportMessage] = useState<string | null>(null);
+  const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
   const [cropMode, setCropMode] = useState(false);
   const [dragRect, setDragRect] = useState<DragRect | null>(null);
+  const [showOriginal, setShowOriginal] = useState(false);
+  const [histogram, setHistogram] = useState<HistogramData | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<ColorRenderer | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const recipeLoadedRef = useRef(false);
 
-  // Load the image + any existing sidecar when the photo changes.
+  // Load the image + any saved edits when the photo changes.
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -46,8 +55,9 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
     recipeLoadedRef.current = false;
     setCropMode(false);
     setDragRect(null);
+    setShowOriginal(false);
 
-    Promise.all([decodeFull(photo, { halfSize: true }), loadEditRecipe(dirHandle, photo.sidecarName)])
+    Promise.all([decodeFull(photo, { halfSize: true }), loadEditRecipe(dirHandle, photo)])
       .then(([img, loadedRecipe]) => {
         if (cancelled) return;
         setDecoded(img);
@@ -91,7 +101,8 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
 
     // While actively drawing a crop, preview the full (uncropped) rotated
     // frame so the overlay lines up with what the user is dragging over.
-    const effectiveRecipe = cropMode ? { ...recipe, crop: null } : recipe;
+    // Holding "Before" shows the untouched original instead of the recipe.
+    const effectiveRecipe = showOriginal ? defaultEditRecipe() : cropMode ? { ...recipe, crop: null } : recipe;
 
     const colorCanvas = renderer.render(decoded, effectiveRecipe);
     const geo = applyGeometry(colorCanvas, decoded.width, decoded.height, effectiveRecipe);
@@ -101,14 +112,32 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.drawImage(geo.canvas, 0, 0);
-  }, [decoded, recipe, cropMode, getRenderer]);
+    setHistogram(computeHistogram(ctx, canvas.width, canvas.height));
+  }, [decoded, recipe, cropMode, showOriginal, getRenderer]);
 
-  // Debounced sidecar save whenever the recipe changes (but not on the
-  // initial load, which would otherwise write an unchanged sidecar).
+  // Hold "\" to peek at the original, like Lightroom's before/after toggle.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === '\\' && !e.repeat) setShowOriginal(true);
+    }
+    function onKeyUp(e: KeyboardEvent) {
+      if (e.key === '\\') setShowOriginal(false);
+    }
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, []);
+
+  // Debounced save to the local catalog whenever the recipe changes (but
+  // not on the initial load, which would otherwise write back an
+  // unchanged recipe).
   useEffect(() => {
     if (!recipeLoadedRef.current) return;
     const handle = setTimeout(() => {
-      saveEditRecipe(dirHandle, photo.sidecarName, recipe).then(onSaved).catch(console.error);
+      saveEditRecipe(photo, recipe).then(onSaved).catch(console.error);
     }, SAVE_DEBOUNCE_MS);
     return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -119,11 +148,28 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
   }
 
   function resetAll() {
-    setRecipe(defaultEditRecipe());
+    setRecipe((r) => ({ ...defaultEditRecipe(), rotation: r.rotation, crop: r.crop }));
   }
 
   function rotate(dir: 1 | -1) {
     setRecipe((r) => ({ ...r, rotation: (((r.rotation + dir) % 4) + 4) as 0 | 1 | 2 | 3 }));
+  }
+
+  function handleCopySettings() {
+    copyRecipeToClipboard(recipe);
+    setSettingsMessage('Copied edit settings');
+    window.setTimeout(() => setSettingsMessage(null), 2000);
+  }
+
+  function handlePasteSettings() {
+    const next = pasteRecipeOnto(recipe);
+    if (next) {
+      setRecipe(next);
+      setSettingsMessage('Pasted edit settings');
+    } else {
+      setSettingsMessage('Nothing copied yet');
+    }
+    window.setTimeout(() => setSettingsMessage(null), 2000);
   }
 
   // --- Crop drag handling -------------------------------------------------
@@ -223,12 +269,29 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
         <button onClick={onClose}>&larr; Back to grid</button>
         <strong>{photo.name}</strong>
         <div className="editor-header-actions">
-          {!dirHandle && (
-            <span className="muted" title="Opened as a single file, not a folder — edits aren't auto-saved. Export when you're done.">
-              Edits not auto-saved
-            </span>
+          <button onClick={handleCopySettings} disabled={loading || !!error} title="Copy edit settings">
+            Copy
+          </button>
+          <button
+            onClick={handlePasteSettings}
+            disabled={loading || !!error || !hasClipboardRecipe()}
+            title="Paste edit settings"
+          >
+            Paste
+          </button>
+          <button
+            className={showOriginal ? 'active' : ''}
+            onMouseDown={() => setShowOriginal(true)}
+            onMouseUp={() => setShowOriginal(false)}
+            onMouseLeave={() => setShowOriginal(false)}
+            disabled={loading || !!error}
+            title="Hold to compare with the original (or hold \\)"
+          >
+            Before
+          </button>
+          {(settingsMessage || exportMessage) && (
+            <span className="muted">{settingsMessage ?? exportMessage}</span>
           )}
-          {exportMessage && <span className="muted">{exportMessage}</span>}
           <button onClick={handleExport} disabled={exporting || loading || !!error}>
             {exporting ? 'Exporting…' : 'Export JPEG'}
           </button>
@@ -249,11 +312,16 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
                 onPointerUp={onCanvasPointerUp}
               />
               {cropMode && dragRect && <div className="crop-overlay" style={cropOverlayStyle} />}
+              {showOriginal && <div className="before-badge">Original</div>}
             </div>
           )}
         </div>
 
         <div className="editor-panel">
+          <div className="panel-section">
+            <Histogram data={histogram} />
+          </div>
+
           <div className="panel-section">
             <div className="panel-section-title">Geometry</div>
             <div className="button-row">
@@ -349,6 +417,78 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
               min={-100}
               max={100}
               onChange={(v) => updateRecipe({ vibrance: v })}
+            />
+          </div>
+
+          <div className="panel-section">
+            <div className="panel-section-title">Color Mixer</div>
+            <HSLMixerPanel value={recipe.hsl} onChange={(hsl) => updateRecipe({ hsl })} />
+          </div>
+
+          <div className="panel-section">
+            <div className="panel-section-title">Color Grading</div>
+            <div className="color-wheel-row">
+              <ColorWheel
+                label="Shadows"
+                value={recipe.gradeShadows}
+                onChange={(gradeShadows) => updateRecipe({ gradeShadows })}
+              />
+              <ColorWheel
+                label="Midtones"
+                value={recipe.gradeMidtones}
+                onChange={(gradeMidtones) => updateRecipe({ gradeMidtones })}
+              />
+              <ColorWheel
+                label="Highlights"
+                value={recipe.gradeHighlights}
+                onChange={(gradeHighlights) => updateRecipe({ gradeHighlights })}
+              />
+            </div>
+            <Slider
+              label="Blending"
+              value={recipe.gradeBlending}
+              min={0}
+              max={100}
+              onChange={(v) => updateRecipe({ gradeBlending: v })}
+            />
+            <Slider
+              label="Balance"
+              value={recipe.gradeBalance}
+              min={-100}
+              max={100}
+              onChange={(v) => updateRecipe({ gradeBalance: v })}
+            />
+          </div>
+
+          <div className="panel-section">
+            <div className="panel-section-title">Detail</div>
+            <Slider
+              label="Clarity"
+              value={recipe.clarity}
+              min={-100}
+              max={100}
+              onChange={(v) => updateRecipe({ clarity: v })}
+            />
+            <Slider
+              label="Dehaze"
+              value={recipe.dehaze}
+              min={-100}
+              max={100}
+              onChange={(v) => updateRecipe({ dehaze: v })}
+            />
+            <Slider
+              label="Sharpening"
+              value={recipe.sharpen}
+              min={0}
+              max={100}
+              onChange={(v) => updateRecipe({ sharpen: v })}
+            />
+            <Slider
+              label="Noise Reduction"
+              value={recipe.noiseReduction}
+              min={0}
+              max={100}
+              onChange={(v) => updateRecipe({ noiseReduction: v })}
             />
           </div>
 
