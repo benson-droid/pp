@@ -1,50 +1,67 @@
-/** Reading/writing the JSON edit-recipe sidecar for a single photo. */
-import type { EditRecipe } from '../types';
+/** Loading/saving a photo's edit recipe — backed by the browser-local
+ * catalog (see catalog.ts), not a file on disk. */
+import type { EditRecipe, PhotoEntry } from '../types';
 import { defaultEditRecipe } from '../types';
-import { readSidecarText, writeSidecarText } from './fileAccess';
+import { readSidecarText } from './fileAccess';
+import { deleteCatalogRecipe, getCatalogRecipe, photoKey, setCatalogRecipe } from './catalog';
 import { isDefaultCurve, sanitizeCurve } from './toneCurve';
 
-/** `dirHandle` is `null` in single-file mode (photos opened via "Open
- * Files…" rather than "Open Folder…"), where there's no directory to write
- * a sidecar into — edits there exist only in memory for the session. */
-export async function loadEditRecipe(
-  dirHandle: FileSystemDirectoryHandle | null,
-  sidecarName: string,
-): Promise<EditRecipe> {
-  if (!dirHandle) return defaultEditRecipe();
-  const text = await readSidecarText(dirHandle, sidecarName);
-  if (!text) return defaultEditRecipe();
-  try {
-    const parsed = JSON.parse(text) as Partial<EditRecipe>;
-    // Merge onto defaults so a sidecar from an older/newer app version with
-    // missing fields still loads sensibly. The curve is sanitized
-    // separately since a malformed/hand-edited array needs real validation,
-    // not just a presence check.
-    return {
-      ...defaultEditRecipe(),
-      ...parsed,
-      version: 1,
-      curve: sanitizeCurve(parsed.curve),
-    };
-  } catch {
-    return defaultEditRecipe();
-  }
+function mergeOntoDefaults(parsed: Partial<EditRecipe>): EditRecipe {
+  const d = defaultEditRecipe();
+  return {
+    ...d,
+    ...parsed,
+    version: 1,
+    curve: sanitizeCurve(parsed.curve),
+    hsl: { ...d.hsl, ...(parsed.hsl ?? {}) },
+    gradeShadows: { ...d.gradeShadows, ...(parsed.gradeShadows ?? {}) },
+    gradeMidtones: { ...d.gradeMidtones, ...(parsed.gradeMidtones ?? {}) },
+    gradeHighlights: { ...d.gradeHighlights, ...(parsed.gradeHighlights ?? {}) },
+  };
 }
 
-export async function saveEditRecipe(
+/** `dirHandle` is only used for a one-time migration: if this photo has an
+ * old on-disk `.edit.json` sidecar from before the local catalog existed
+ * (and nothing in the catalog yet), it's imported once so earlier edits
+ * aren't lost. Pass `null` in single-file mode — there's no folder to look
+ * for a legacy sidecar in, which is fine, since the catalog covers both
+ * modes going forward. */
+export async function loadEditRecipe(
   dirHandle: FileSystemDirectoryHandle | null,
-  sidecarName: string,
-  recipe: EditRecipe,
-): Promise<void> {
-  if (!dirHandle) return; // Single-file mode: nothing to persist to.
-  await writeSidecarText(dirHandle, sidecarName, JSON.stringify(recipe, null, 2));
+  photo: PhotoEntry,
+): Promise<EditRecipe> {
+  const key = await photoKey(photo);
+  const cached = await getCatalogRecipe(key);
+  if (cached) return mergeOntoDefaults(cached);
+
+  if (dirHandle) {
+    const text = await readSidecarText(dirHandle, photo.sidecarName);
+    if (text) {
+      try {
+        const parsed = JSON.parse(text) as Partial<EditRecipe>;
+        const recipe = mergeOntoDefaults(parsed);
+        await setCatalogRecipe(key, recipe);
+        return recipe;
+      } catch {
+        // Corrupt legacy sidecar — fall through to defaults.
+      }
+    }
+  }
+  return defaultEditRecipe();
+}
+
+export async function saveEditRecipe(photo: PhotoEntry, recipe: EditRecipe): Promise<void> {
+  const key = await photoKey(photo);
+  if (isDefaultRecipe(recipe)) {
+    // Nothing to remember — keep the catalog (and the "Edited" badge) tidy.
+    await deleteCatalogRecipe(key);
+  } else {
+    await setCatalogRecipe(key, recipe);
+  }
 }
 
 export function isDefaultRecipe(recipe: EditRecipe): boolean {
   const d = defaultEditRecipe();
-  return (Object.keys(d) as (keyof EditRecipe)[]).every((k) => {
-    if (k === 'crop') return recipe.crop === null;
-    if (k === 'curve') return isDefaultCurve(recipe.curve); // arrays never === by reference
-    return recipe[k] === d[k];
-  });
+  const withoutSpecial = (r: EditRecipe) => JSON.stringify({ ...r, curve: undefined, crop: undefined });
+  return isDefaultCurve(recipe.curve) && recipe.crop === null && withoutSpecial(recipe) === withoutSpecial(d);
 }
