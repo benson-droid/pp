@@ -73,7 +73,6 @@ export async function pickFiles(): Promise<PhotoEntry[]> {
       kind,
       fileHandle: handle,
       sidecarName: sidecarNameFor(handle.name),
-      hasEdits: false,
     });
   }
   photos.sort((a, b) => a.name.localeCompare(b.name));
@@ -95,28 +94,16 @@ export async function saveBlobWithPicker(blob: Blob, suggestedName: string): Pro
 
 export async function listPhotos(dirHandle: FileSystemDirectoryHandle): Promise<PhotoEntry[]> {
   const photos: PhotoEntry[] = [];
-  const sidecarNames = new Set<string>();
-  const entries: [string, FileSystemHandle][] = [];
 
   for await (const entry of dirHandle.values()) {
-    entries.push([entry.name, entry]);
-  }
-
-  for (const [name] of entries) {
-    if (name.endsWith('.edit.json')) sidecarNames.add(name);
-  }
-
-  for (const [name, handle] of entries) {
-    if (handle.kind !== 'file') continue;
-    const kind = kindOf(name);
+    if (entry.kind !== 'file') continue;
+    const kind = kindOf(entry.name);
     if (!kind) continue;
-    const sidecarName = sidecarNameFor(name);
     photos.push({
-      name,
+      name: entry.name,
       kind,
-      fileHandle: handle as FileSystemFileHandle,
-      sidecarName,
-      hasEdits: sidecarNames.has(sidecarName),
+      fileHandle: entry as FileSystemFileHandle,
+      sidecarName: sidecarNameFor(entry.name),
     });
   }
 
