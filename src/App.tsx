@@ -4,6 +4,7 @@ import { listPhotos, pickFiles, pickFolderAndListPhotos } from './lib/fileAccess
 import FolderPicker from './components/FolderPicker';
 import PhotoGrid from './components/PhotoGrid';
 import Editor from './components/Editor';
+import MergeView from './components/MergeView';
 
 export default function App() {
   // dirHandle is null in single-file mode (photos picked individually via
@@ -14,6 +15,8 @@ export default function App() {
   const [sessionStarted, setSessionStarted] = useState(false);
   const [selected, setSelected] = useState<PhotoEntry | null>(null);
   const [pickError, setPickError] = useState<string | null>(null);
+  /** Non-empty while the merge view is open. */
+  const [merging, setMerging] = useState<PhotoEntry[]>([]);
 
   async function handlePickFolder() {
     setPickError(null);
@@ -56,12 +59,17 @@ export default function App() {
     setDirHandle(null);
     setPhotos([]);
     setSelected(null);
+    setMerging([]);
     setPickError(null);
     setSessionStarted(false);
   }
 
   if (!sessionStarted) {
     return <FolderPicker onPickFolder={handlePickFolder} onPickFiles={handlePickFiles} error={pickError} />;
+  }
+
+  if (merging.length > 0) {
+    return <MergeView photos={merging} dirHandle={dirHandle} onClose={() => setMerging([])} />;
   }
 
   if (selected) {
@@ -84,6 +92,7 @@ export default function App() {
       onOpen={setSelected}
       onPickAnotherFolder={handleStartOver}
       folderName={dirHandle ? dirHandle.name : `${photos.length} file${photos.length === 1 ? '' : 's'}`}
+      onMerge={setMerging}
     />
   );
 }

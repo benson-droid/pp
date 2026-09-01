@@ -41,7 +41,7 @@ export function computeTangents(points: CurvePoint[]): number[] {
     d.push(dx <= 0 ? 0 : (points[i + 1].y - points[i].y) / dx);
   }
 
-  const m: number[] = new Array(n);
+  const m: number[] = Array.from({ length: n });
   m[0] = d[0] ?? 0;
   m[n - 1] = d[n - 2] ?? 0;
   for (let i = 1; i < n - 1; i++) {
@@ -107,6 +107,41 @@ export function buildCurveLUT(points: CurvePoint[], size = 256): Uint8Array {
     const x = i / (size - 1);
     const y = clamp01(evalCurve(sorted, tangents, x));
     lut[i] = Math.round(y * 255);
+  }
+  return lut;
+}
+
+/** Builds the interleaved RGBA lookup texture the shader samples: for each
+ * channel, the master curve composed with that channel's own curve (master
+ * applied first, then the channel curve — the order Lightroom's point curve
+ * panel uses). Alpha is left at 255 and unused.
+ *
+ * One texture instead of four keeps the shader to a single sample per
+ * channel and the upload to a single 1KB `texImage2D` per render. */
+export function buildChannelLUTs(
+  master: CurvePoint[],
+  red: CurvePoint[],
+  green: CurvePoint[],
+  blue: CurvePoint[],
+  size = 256,
+): Uint8Array {
+  const prep = (points: CurvePoint[]) => {
+    const sorted = [...points].sort((a, b) => a.x - b.x);
+    return { sorted, tangents: computeTangents(sorted) };
+  };
+  const m = prep(master);
+  const channels = [prep(red), prep(green), prep(blue)];
+
+  const lut = new Uint8Array(size * 4);
+  for (let i = 0; i < size; i++) {
+    const x = i / (size - 1);
+    const afterMaster = clamp01(evalCurve(m.sorted, m.tangents, x));
+    for (let c = 0; c < 3; c++) {
+      const ch = channels[c];
+      const y = clamp01(evalCurve(ch.sorted, ch.tangents, afterMaster));
+      lut[i * 4 + c] = Math.round(y * 255);
+    }
+    lut[i * 4 + 3] = 255;
   }
   return lut;
 }

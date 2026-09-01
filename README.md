@@ -10,12 +10,24 @@ on disk are never modified.
 
 ## Status
 
-Early, personal-use MVP. Supports `.NEF` and `.jpg`/`.jpeg` files. Core adjustments (exposure,
-contrast, highlights, shadows, whites, blacks, temperature, tint, saturation, vibrance, tone
-curve, crop, 90° rotation), an 8-way HSL color mixer, 3-way color grading (shadow/mid/highlight
-tint wheels), detail tools (clarity, dehaze, sharpen, noise reduction), a live histogram,
-press-and-hold before/after comparison, copy/paste edit settings between photos, and JPEG export
-are all working. See [Roadmap](#roadmap) for what's not built yet.
+Early, personal-use MVP. Supports `.NEF` and `.jpg`/`.jpeg` files.
+
+**Editing:** exposure, contrast, highlights, shadows, whites, blacks, temperature, tint,
+saturation, vibrance; a point tone curve with independent **RGB / R / G / B** channels and the
+live histogram drawn behind it; an 8-way HSL color mixer; 3-way color grading (shadow/mid/
+highlight tint wheels); detail tools (clarity, dehaze, sharpening, noise reduction); and
+finishing effects — **film grain** (amount/size/roughness) and a **post-crop vignette**
+(amount/midpoint/feather/roundness).
+
+**Framing:** scroll-to-zoom and drag-to-pan, 90° rotation, a **free-angle straighten** that
+auto-crops away the blank corners, and a crop tool with draggable handles, aspect-ratio presets,
+and a rule-of-thirds overlay.
+
+**Merging** several photos into one — exposure blending (HDR-look), focus stacking, panorama
+stitching, and layer/double-exposure compositing. See [Merging photos](#merging-photos).
+
+**Workflow:** live histogram, press-and-hold before/after, copy/paste edit settings between
+photos, and JPEG export. See [Roadmap](#roadmap) for what's not built yet.
 
 ## Requirements
 
@@ -54,6 +66,34 @@ folder containing `.NEF` and/or `.jpg` files.
   are applied as a second pass with Canvas2D, which is far simpler and less error-prone than doing
   rotated/cropped texture-coordinate math in the shader.
 
+## Merging photos
+
+Select two or more photos in the grid (the checkbox on each thumbnail), then hit **Merge…**.
+Four modes share one engine:
+
+| Mode | What it does |
+| --- | --- |
+| **Exposure blend** | Fuses a bracketed set into one evenly-exposed image, picking the best-exposed, most contrasty, most colorful pixels from each frame (a Mertens-style exposure fusion — no radiance map or tone-mapping step). |
+| **Focus stack** | Keeps whichever frame is sharpest in each region, for front-to-back sharpness in macro and deep-focus landscape work. |
+| **Panorama** | Aligns overlapping frames onto a shared canvas and blends the seams. |
+| **Layers** | Composites frames with a blend mode and opacity, for double exposures. |
+
+All four rest on the same two pieces: `src/lib/align.ts` estimates how frames line up, and
+`src/lib/pyramid.ts` does Laplacian multi-band blending so joins and transitions are invisible
+rather than showing as seams or ghosting.
+
+**Known limits, stated plainly:**
+
+- **Alignment recovers translation only** — not rotation, scale, or perspective. For a steady
+  hand-held pan or the small drift between bracketed frames that's usually enough; frames with
+  real rotation or parallax will show misalignment. A full homography estimator (feature
+  detection + RANSAC) is the next step, and is a significant piece of work in its own right.
+- **Panoramas are not projected onto a cylinder or sphere**, so a wide sweep will bow rather
+  than sitting flat the way dedicated stitchers manage.
+- **Merging runs on the CPU in JavaScript**, so it works at a capped resolution (1200–2600px on
+  the long edge, your choice) and blocks the UI while it runs. Moving it to a Web Worker and
+  raising the ceiling is a worthwhile follow-up.
+
 ## Project structure
 
 ```
@@ -68,13 +108,20 @@ src/
     imageDecode.ts        Unified decode entry point (routes RAW vs JPEG)
     canvasUtils.ts         Thumbnail/export canvas helpers
     histogram.ts           Per-channel histogram sampling from a rendered canvas
-    glPipeline.ts          WebGL2 color shader + rotation/crop geometry pass
+    toneCurve.ts           Monotonic spline math + the composed RGB curve LUT
+    glPipeline.ts          WebGL2 color shader + rotation/straighten/crop geometry pass
+    pyramid.ts             Gaussian/Laplacian pyramids + multi-band blending
+    align.ts               Coarse-to-fine translation alignment between frames
+    merge.ts               The four merge modes, built on pyramid.ts + align.ts
   components/
     FolderPicker.tsx       Landing screen / folder picker
-    PhotoGrid.tsx           Thumbnail grid (library view)
-    Editor.tsx              Main editor: canvas preview + adjustment panel
-    Slider.tsx              Reusable labeled slider control
-    ToneCurve.tsx           Draggable tone curve editor
+    PhotoGrid.tsx           Thumbnail grid, with multi-select for merging
+    Editor.tsx              Main editor: viewport + adjustment panel
+    CanvasViewport.tsx      Zoom, pan, and the interactive crop overlay
+    MergeView.tsx           Multi-photo merge UI
+    PanelSection.tsx        Collapsible panel group
+    Slider.tsx              Slider with filled track + click-to-type value
+    ToneCurve.tsx           Per-channel tone curve editor
     ColorWheel.tsx          Hue/sat dial + luminance slider (used by color grading)
     HSLMixer.tsx            8-swatch color mixer panel
     Histogram.tsx           Live RGB histogram canvas
@@ -117,8 +164,10 @@ Not yet built, roughly in order of likely usefulness:
 - Preset "looks" — film emulations and saveable custom presets.
 - Batch export (apply/export edits across multiple selected photos at once).
 - Ratings, filtering, and undo/redo history beyond per-slider reset.
-- Per-channel R/G/B tone curves (currently one master/RGB curve).
 - Split-view (drag divider) before/after, in addition to the current press-and-hold.
+- Full homography alignment (feature matching + RANSAC) and cylindrical projection, to lift
+  panorama stitching past translation-only.
+- Move merging into a Web Worker so it doesn't block the UI, and raise the resolution ceiling.
 - Local adjustment brushes / masks (a significant undertaking — full Lightroom parity here is a
   multi-person, multi-month effort, not a quick add-on).
 - Optional cloud sync backend for cross-device access, for people on non-Chromium browsers, or

@@ -13,6 +13,9 @@ function mergeOntoDefaults(parsed: Partial<EditRecipe>): EditRecipe {
     ...parsed,
     version: 1,
     curve: sanitizeCurve(parsed.curve),
+    curveR: sanitizeCurve(parsed.curveR),
+    curveG: sanitizeCurve(parsed.curveG),
+    curveB: sanitizeCurve(parsed.curveB),
     hsl: { ...d.hsl, ...parsed.hsl },
     gradeShadows: { ...d.gradeShadows, ...parsed.gradeShadows },
     gradeMidtones: { ...d.gradeMidtones, ...parsed.gradeMidtones },
@@ -62,6 +65,21 @@ export async function saveEditRecipe(photo: PhotoEntry, recipe: EditRecipe): Pro
 
 export function isDefaultRecipe(recipe: EditRecipe): boolean {
   const d = defaultEditRecipe();
-  const withoutSpecial = (r: EditRecipe) => JSON.stringify({ ...r, curve: undefined, crop: undefined });
-  return isDefaultCurve(recipe.curve) && recipe.crop === null && withoutSpecial(recipe) === withoutSpecial(d);
+  const withoutSpecial = (r: EditRecipe) =>
+    JSON.stringify({
+      ...r,
+      curve: undefined,
+      curveR: undefined,
+      curveG: undefined,
+      curveB: undefined,
+      crop: undefined,
+    });
+  return (
+    isDefaultCurve(recipe.curve) &&
+    isDefaultCurve(recipe.curveR) &&
+    isDefaultCurve(recipe.curveG) &&
+    isDefaultCurve(recipe.curveB) &&
+    recipe.crop === null &&
+    withoutSpecial(recipe) === withoutSpecial(d)
+  );
 }

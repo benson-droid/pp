@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { DecodedImage, EditRecipe, PhotoEntry } from '../types';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { CurvePoint, DecodedImage, EditRecipe, PhotoEntry } from '../types';
 import { defaultEditRecipe } from '../types';
 import { decodeFull } from '../lib/imageDecode';
 import { loadEditRecipe, saveEditRecipe } from '../lib/sidecar';
@@ -8,11 +8,14 @@ import { canvasToBlob } from '../lib/canvasUtils';
 import { saveBlobWithPicker, writeExportedFile } from '../lib/fileAccess';
 import { computeHistogram, type HistogramData } from '../lib/histogram';
 import { copyRecipeToClipboard, hasClipboardRecipe, pasteRecipeOnto } from '../lib/editClipboard';
+import { isDefaultCurve } from '../lib/toneCurve';
 import Slider from './Slider';
-import ToneCurve from './ToneCurve';
+import ToneCurve, { type CurveChannel } from './ToneCurve';
 import ColorWheel from './ColorWheel';
 import HSLMixerPanel from './HSLMixer';
 import Histogram from './Histogram';
+import PanelSection from './PanelSection';
+import CanvasViewport from './CanvasViewport';
 
 interface EditorProps {
   photo: PhotoEntry;
@@ -24,9 +27,20 @@ interface EditorProps {
   onSaved: () => void;
 }
 
-type DragRect = { x: number; y: number; w: number; h: number };
-
 const SAVE_DEBOUNCE_MS = 600;
+
+/** Crop presets. `null` is a free crop; `0` means "the photo's own ratio",
+ * resolved against the live frame when picked. */
+const ASPECT_PRESETS: { label: string; value: number | null | 0 }[] = [
+  { label: 'Free', value: null },
+  { label: 'Original', value: 0 },
+  { label: '1:1', value: 1 },
+  { label: '4:5', value: 4 / 5 },
+  { label: '5:4', value: 5 / 4 },
+  { label: '3:2', value: 3 / 2 },
+  { label: '2:3', value: 2 / 3 },
+  { label: '16:9', value: 16 / 9 },
+];
 
 export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorProps) {
   const [decoded, setDecoded] = useState<DecodedImage | null>(null);
@@ -37,13 +51,13 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
   const [exportMessage, setExportMessage] = useState<string | null>(null);
   const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
   const [cropMode, setCropMode] = useState(false);
-  const [dragRect, setDragRect] = useState<DragRect | null>(null);
   const [showOriginal, setShowOriginal] = useState(false);
   const [histogram, setHistogram] = useState<HistogramData | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<ColorRenderer | null>(null);
-  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const recipeLoadedRef = useRef(false);
 
   // Load the image + any saved edits when the photo changes.
@@ -54,8 +68,8 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
     setDecoded(null);
     recipeLoadedRef.current = false;
     setCropMode(false);
-    setDragRect(null);
     setShowOriginal(false);
+    setZoom(1);
 
     Promise.all([decodeFull(photo, { halfSize: true }), loadEditRecipe(dirHandle, photo)])
       .then(([img, loadedRecipe]) => {
@@ -99,10 +113,14 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    // While actively drawing a crop, preview the full (uncropped) rotated
-    // frame so the overlay lines up with what the user is dragging over.
-    // Holding "Before" shows the untouched original instead of the recipe.
-    const effectiveRecipe = showOriginal ? defaultEditRecipe() : cropMode ? { ...recipe, crop: null } : recipe;
+    // While cropping, show the whole (uncropped) frame so the crop
+    // rectangle has something to sit on. Holding "Before" swaps in a
+    // default recipe for comparison.
+    const effectiveRecipe = showOriginal
+      ? { ...defaultEditRecipe(), rotation: recipe.rotation, straighten: recipe.straighten, crop: recipe.crop }
+      : cropMode
+        ? { ...recipe, crop: null }
+        : recipe;
 
     const colorCanvas = renderer.render(decoded, effectiveRecipe);
     const geo = applyGeometry(colorCanvas, decoded.width, decoded.height, effectiveRecipe);
@@ -112,6 +130,7 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.drawImage(geo.canvas, 0, 0);
+    setCanvasSize({ width: geo.width, height: geo.height });
     setHistogram(computeHistogram(ctx, canvas.width, canvas.height));
   }, [decoded, recipe, cropMode, showOriginal, getRenderer]);
 
@@ -148,7 +167,13 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
   }
 
   function resetAll() {
-    setRecipe((r) => ({ ...defaultEditRecipe(), rotation: r.rotation, crop: r.crop }));
+    setRecipe((r) => ({
+      ...defaultEditRecipe(),
+      rotation: r.rotation,
+      straighten: r.straighten,
+      crop: r.crop,
+      cropAspect: r.cropAspect,
+    }));
   }
 
   function rotate(dir: 1 | -1) {
@@ -157,67 +182,71 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
 
   function handleCopySettings() {
     copyRecipeToClipboard(recipe);
-    setSettingsMessage('Copied edit settings');
-    window.setTimeout(() => setSettingsMessage(null), 2000);
+    flashMessage('Copied edit settings');
   }
 
   function handlePasteSettings() {
     const next = pasteRecipeOnto(recipe);
     if (next) {
       setRecipe(next);
-      setSettingsMessage('Pasted edit settings');
+      flashMessage('Pasted edit settings');
     } else {
-      setSettingsMessage('Nothing copied yet');
+      flashMessage('Nothing copied yet');
     }
+  }
+
+  function flashMessage(text: string) {
+    setSettingsMessage(text);
     window.setTimeout(() => setSettingsMessage(null), 2000);
   }
 
-  // --- Crop drag handling -------------------------------------------------
+  // --- Crop ----------------------------------------------------------------
 
-  function onCanvasPointerDown(e: React.PointerEvent<HTMLCanvasElement>) {
-    if (!cropMode) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    dragStartRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-    setDragRect({ x: dragStartRef.current.x, y: dragStartRef.current.y, w: 0, h: 0 });
-    e.currentTarget.setPointerCapture(e.pointerId);
+  function enterCropMode() {
+    // Give the overlay a rect to grab even when nothing's cropped yet.
+    if (!recipe.crop) updateRecipe({ crop: { x: 0, y: 0, width: 1, height: 1 } });
+    setZoom(1);
+    setCropMode(true);
   }
 
-  function onCanvasPointerMove(e: React.PointerEvent<HTMLCanvasElement>) {
-    if (!cropMode || !dragStartRef.current) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const cur = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-    const start = dragStartRef.current;
-    setDragRect({
-      x: Math.min(start.x, cur.x),
-      y: Math.min(start.y, cur.y),
-      w: Math.abs(cur.x - start.x),
-      h: Math.abs(cur.y - start.y),
+  function exitCropMode() {
+    // A full-frame crop is the same as no crop — store it as none so the
+    // "cropped" state stays meaningful.
+    setRecipe((r) => {
+      const c = r.crop;
+      const isFull = c && c.x <= 0.001 && c.y <= 0.001 && c.width >= 0.999 && c.height >= 0.999;
+      return isFull ? { ...r, crop: null } : r;
+    });
+    setCropMode(false);
+  }
+
+  function pickAspect(preset: number | null | 0) {
+    // "Original" resolves against the current frame, which already has any
+    // 90-degree rotation and straightening applied.
+    const aspect =
+      preset === 0 ? (canvasSize.height > 0 ? canvasSize.width / canvasSize.height : 1) : preset;
+    updateRecipe({ cropAspect: aspect });
+    if (aspect === null) return;
+
+    // Fit the largest centered rect of that ratio inside the current crop's
+    // frame, so picking a ratio immediately shows the result.
+    const frameAspect = canvasSize.height > 0 ? canvasSize.width / canvasSize.height : 1;
+    let width = 1;
+    let height = 1;
+    if (aspect > frameAspect) {
+      height = frameAspect / aspect;
+    } else {
+      width = aspect / frameAspect;
+    }
+    updateRecipe({
+      cropAspect: aspect,
+      crop: { x: (1 - width) / 2, y: (1 - height) / 2, width, height },
     });
   }
 
-  function onCanvasPointerUp(e: React.PointerEvent<HTMLCanvasElement>) {
-    if (!cropMode || !dragStartRef.current) return;
-    dragStartRef.current = null;
-    const canvas = e.currentTarget;
-    const displayRect = canvas.getBoundingClientRect();
-    if (dragRect && dragRect.w > 8 && dragRect.h > 8) {
-      updateRecipe({
-        crop: {
-          x: dragRect.x / displayRect.width,
-          y: dragRect.y / displayRect.height,
-          width: dragRect.w / displayRect.width,
-          height: dragRect.h / displayRect.height,
-        },
-      });
-    }
-    setDragRect(null);
-    setCropMode(false);
-  }
-
   function clearCrop() {
-    updateRecipe({ crop: null });
+    updateRecipe({ crop: null, cropAspect: null, straighten: 0 });
     setCropMode(false);
-    setDragRect(null);
   }
 
   // --- Export --------------------------------------------------------------
@@ -235,13 +264,10 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
         await writeExportedFile(dirHandle, fileName, blob);
         setExportMessage(`Saved edited/${fileName}`);
       } else {
-        // Single-file mode: no folder to write into, so prompt for a
-        // save location instead.
         await saveBlobWithPicker(blob, fileName);
         setExportMessage(`Saved ${fileName}`);
       }
     } catch (err) {
-      // AbortError happens when the user just closes the save dialog.
       if ((err as DOMException)?.name === 'AbortError') {
         setExportMessage(null);
       } else {
@@ -253,15 +279,48 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
     }
   }
 
-  const cropOverlayStyle = useMemo(() => {
-    if (!dragRect) return undefined;
-    return {
-      left: dragRect.x,
-      top: dragRect.y,
-      width: dragRect.w,
-      height: dragRect.h,
-    };
-  }, [dragRect]);
+  // --- Panel helpers -------------------------------------------------------
+
+  const d = defaultEditRecipe();
+  const curves: Record<CurveChannel, CurvePoint[]> = {
+    master: recipe.curve,
+    red: recipe.curveR,
+    green: recipe.curveG,
+    blue: recipe.curveB,
+  };
+
+  function setCurve(channel: CurveChannel, points: CurvePoint[]) {
+    const key = ({ master: 'curve', red: 'curveR', green: 'curveG', blue: 'curveB' } as const)[channel];
+    updateRecipe({ [key]: points } as Partial<EditRecipe>);
+  }
+
+  const lightModified =
+    recipe.exposure !== 0 ||
+    recipe.contrast !== 0 ||
+    recipe.highlights !== 0 ||
+    recipe.shadows !== 0 ||
+    recipe.whites !== 0 ||
+    recipe.blacks !== 0;
+  const colorModified =
+    recipe.temperature !== 0 || recipe.tint !== 0 || recipe.saturation !== 0 || recipe.vibrance !== 0;
+  const curveModified = !(
+    isDefaultCurve(recipe.curve) &&
+    isDefaultCurve(recipe.curveR) &&
+    isDefaultCurve(recipe.curveG) &&
+    isDefaultCurve(recipe.curveB)
+  );
+  const mixerModified = Object.values(recipe.hsl).some((c) => c.hue !== 0 || c.sat !== 0 || c.lum !== 0);
+  const gradeModified =
+    recipe.gradeShadows.sat !== 0 ||
+    recipe.gradeMidtones.sat !== 0 ||
+    recipe.gradeHighlights.sat !== 0 ||
+    recipe.gradeShadows.lum !== 0 ||
+    recipe.gradeMidtones.lum !== 0 ||
+    recipe.gradeHighlights.lum !== 0;
+  const detailModified =
+    recipe.clarity !== 0 || recipe.dehaze !== 0 || recipe.sharpen !== 0 || recipe.noiseReduction !== 0;
+  const effectsModified = recipe.grainAmount !== 0 || recipe.vignetteAmount !== 0;
+  const geometryModified = recipe.rotation !== 0 || recipe.straighten !== 0 || recipe.crop !== null;
 
   return (
     <div className="editor-view">
@@ -269,6 +328,19 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
         <button onClick={onClose}>&larr; Back to grid</button>
         <strong>{photo.name}</strong>
         <div className="editor-header-actions">
+          {!cropMode && (
+            <div className="zoom-controls">
+              <button onClick={() => setZoom(1)} className={zoom === 1 ? 'active' : ''} title="Fit to window">
+                Fit
+              </button>
+              <button onClick={() => setZoom(2)} className={zoom === 2 ? 'active' : ''} title="Zoom to 200%">
+                2&times;
+              </button>
+              <button onClick={() => setZoom(4)} className={zoom === 4 ? 'active' : ''} title="Zoom to 400%">
+                4&times;
+              </button>
+            </div>
+          )}
           <button onClick={handleCopySettings} disabled={loading || !!error} title="Copy edit settings">
             Copy
           </button>
@@ -289,9 +361,7 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
           >
             Before
           </button>
-          {(settingsMessage || exportMessage) && (
-            <span className="muted">{settingsMessage ?? exportMessage}</span>
-          )}
+          {(settingsMessage || exportMessage) && <span className="muted">{settingsMessage ?? exportMessage}</span>}
           <button onClick={handleExport} disabled={exporting || loading || !!error}>
             {exporting ? 'Exporting…' : 'Export JPEG'}
           </button>
@@ -303,41 +373,92 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
           {loading && <p className="muted">Decoding…</p>}
           {error && <p className="warning">{error}</p>}
           {!loading && !error && (
-            <div className="canvas-wrap">
-              <canvas
-                ref={canvasRef}
-                className={cropMode ? 'crop-cursor' : ''}
-                onPointerDown={onCanvasPointerDown}
-                onPointerMove={onCanvasPointerMove}
-                onPointerUp={onCanvasPointerUp}
-              />
-              {cropMode && dragRect && <div className="crop-overlay" style={cropOverlayStyle} />}
-              {showOriginal && <div className="before-badge">Original</div>}
+            <CanvasViewport
+              width={canvasSize.width}
+              height={canvasSize.height}
+              cropMode={cropMode}
+              crop={recipe.crop}
+              cropAspect={recipe.cropAspect}
+              onCropChange={(crop) => updateRecipe({ crop })}
+              showOriginal={showOriginal}
+              zoom={zoom}
+              onZoomChange={setZoom}
+            >
+              <canvas ref={canvasRef} />
+            </CanvasViewport>
+          )}
+          {cropMode && (
+            <div className="crop-toolbar">
+              <div className="crop-aspects">
+                {ASPECT_PRESETS.map((p) => {
+                  const isActive =
+                    p.value === null
+                      ? recipe.cropAspect === null
+                      : p.value === 0
+                        ? false
+                        : recipe.cropAspect !== null && Math.abs(recipe.cropAspect - p.value) < 0.001;
+                  return (
+                    <button
+                      key={p.label}
+                      className={isActive ? 'active' : ''}
+                      onClick={() => pickAspect(p.value)}
+                    >
+                      {p.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="crop-straighten">
+                <Slider
+                  label="Straighten"
+                  value={recipe.straighten}
+                  min={-45}
+                  max={45}
+                  step={0.1}
+                  onChange={(v) => updateRecipe({ straighten: v })}
+                />
+              </div>
+              <div className="crop-toolbar-actions">
+                <button onClick={clearCrop}>Reset</button>
+                <button className="primary" onClick={exitCropMode}>
+                  Done
+                </button>
+              </div>
             </div>
           )}
         </div>
 
         <div className="editor-panel">
-          <div className="panel-section">
+          <div className="panel-histogram">
             <Histogram data={histogram} />
           </div>
 
-          <div className="panel-section">
-            <div className="panel-section-title">Geometry</div>
+          <PanelSection title="Geometry" modified={geometryModified}>
             <div className="button-row">
               <button onClick={() => rotate(-1)}>Rotate ⟲</button>
               <button onClick={() => rotate(1)}>Rotate ⟳</button>
             </div>
             <div className="button-row">
-              <button className={cropMode ? 'active' : ''} onClick={() => setCropMode((v) => !v)}>
-                {cropMode ? 'Drag on image to crop…' : 'Crop'}
+              <button className={cropMode ? 'active' : ''} onClick={cropMode ? exitCropMode : enterCropMode}>
+                {cropMode ? 'Done cropping' : 'Crop & straighten'}
               </button>
-              {recipe.crop && <button onClick={clearCrop}>Clear crop</button>}
+              {(recipe.crop || recipe.straighten !== 0) && !cropMode && (
+                <button onClick={clearCrop}>Clear</button>
+              )}
             </div>
-          </div>
+            {!cropMode && recipe.straighten !== 0 && (
+              <Slider
+                label="Straighten"
+                value={recipe.straighten}
+                min={-45}
+                max={45}
+                step={0.1}
+                onChange={(v) => updateRecipe({ straighten: v })}
+              />
+            )}
+          </PanelSection>
 
-          <div className="panel-section">
-            <div className="panel-section-title">Light</div>
+          <PanelSection title="Light" modified={lightModified}>
             <Slider
               label="Exposure"
               value={recipe.exposure}
@@ -381,15 +502,13 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
               max={100}
               onChange={(v) => updateRecipe({ blacks: v })}
             />
-          </div>
+          </PanelSection>
 
-          <div className="panel-section">
-            <div className="panel-section-title">Tone Curve</div>
-            <ToneCurve points={recipe.curve} onChange={(curve) => updateRecipe({ curve })} />
-          </div>
+          <PanelSection title="Tone Curve" modified={curveModified}>
+            <ToneCurve curves={curves} onChange={setCurve} histogram={histogram} />
+          </PanelSection>
 
-          <div className="panel-section">
-            <div className="panel-section-title">Color</div>
+          <PanelSection title="Color" modified={colorModified}>
             <Slider
               label="Temperature"
               value={recipe.temperature}
@@ -418,15 +537,13 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
               max={100}
               onChange={(v) => updateRecipe({ vibrance: v })}
             />
-          </div>
+          </PanelSection>
 
-          <div className="panel-section">
-            <div className="panel-section-title">Color Mixer</div>
+          <PanelSection title="Color Mixer" defaultOpen={false} modified={mixerModified}>
             <HSLMixerPanel value={recipe.hsl} onChange={(hsl) => updateRecipe({ hsl })} />
-          </div>
+          </PanelSection>
 
-          <div className="panel-section">
-            <div className="panel-section-title">Color Grading</div>
+          <PanelSection title="Color Grading" defaultOpen={false} modified={gradeModified}>
             <div className="color-wheel-row">
               <ColorWheel
                 label="Shadows"
@@ -449,6 +566,7 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
               value={recipe.gradeBlending}
               min={0}
               max={100}
+              defaultValue={d.gradeBlending}
               onChange={(v) => updateRecipe({ gradeBlending: v })}
             />
             <Slider
@@ -458,10 +576,9 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
               max={100}
               onChange={(v) => updateRecipe({ gradeBalance: v })}
             />
-          </div>
+          </PanelSection>
 
-          <div className="panel-section">
-            <div className="panel-section-title">Detail</div>
+          <PanelSection title="Detail" defaultOpen={false} modified={detailModified}>
             <Slider
               label="Clarity"
               value={recipe.clarity}
@@ -490,7 +607,77 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
               max={100}
               onChange={(v) => updateRecipe({ noiseReduction: v })}
             />
-          </div>
+            {(recipe.sharpen > 0 || recipe.noiseReduction > 0) && zoom === 1 && (
+              <p className="panel-hint muted">Zoom in (scroll or 2&times;) to judge these accurately.</p>
+            )}
+          </PanelSection>
+
+          <PanelSection title="Effects" defaultOpen={false} modified={effectsModified}>
+            <div className="panel-subhead">Grain</div>
+            <Slider
+              label="Amount"
+              value={recipe.grainAmount}
+              min={0}
+              max={100}
+              onChange={(v) => updateRecipe({ grainAmount: v })}
+            />
+            {recipe.grainAmount > 0 && (
+              <>
+                <Slider
+                  label="Size"
+                  value={recipe.grainSize}
+                  min={0}
+                  max={100}
+                  defaultValue={d.grainSize}
+                  onChange={(v) => updateRecipe({ grainSize: v })}
+                />
+                <Slider
+                  label="Roughness"
+                  value={recipe.grainRoughness}
+                  min={0}
+                  max={100}
+                  defaultValue={d.grainRoughness}
+                  onChange={(v) => updateRecipe({ grainRoughness: v })}
+                />
+              </>
+            )}
+
+            <div className="panel-subhead">Post-Crop Vignette</div>
+            <Slider
+              label="Amount"
+              value={recipe.vignetteAmount}
+              min={-100}
+              max={100}
+              onChange={(v) => updateRecipe({ vignetteAmount: v })}
+            />
+            {recipe.vignetteAmount !== 0 && (
+              <>
+                <Slider
+                  label="Midpoint"
+                  value={recipe.vignetteMidpoint}
+                  min={0}
+                  max={100}
+                  defaultValue={d.vignetteMidpoint}
+                  onChange={(v) => updateRecipe({ vignetteMidpoint: v })}
+                />
+                <Slider
+                  label="Feather"
+                  value={recipe.vignetteFeather}
+                  min={0}
+                  max={100}
+                  defaultValue={d.vignetteFeather}
+                  onChange={(v) => updateRecipe({ vignetteFeather: v })}
+                />
+                <Slider
+                  label="Roundness"
+                  value={recipe.vignetteRoundness}
+                  min={-100}
+                  max={100}
+                  onChange={(v) => updateRecipe({ vignetteRoundness: v })}
+                />
+              </>
+            )}
+          </PanelSection>
 
           <button className="reset-all" onClick={resetAll}>
             Reset all edits

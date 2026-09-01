@@ -20,7 +20,7 @@
  */
 import type { DecodedImage, EditRecipe, HSLChannelName } from '../types';
 import { HSL_CHANNEL_NAMES } from '../types';
-import { buildCurveLUT } from './toneCurve';
+import { buildChannelLUTs } from './toneCurve';
 
 const VERTEX_SHADER = `#version 300 es
 in vec2 aPosition;
@@ -63,6 +63,23 @@ uniform vec3 uGradeMidtones;
 uniform vec3 uGradeHighlights;
 uniform float uGradeBlending;  // 0..100
 uniform float uGradeBalance;   // -100..100
+
+// Where this pixel lands in the *final* (rotated + cropped) frame, so the
+// vignette and grain are anchored to the output the user actually sees
+// rather than the uncropped source. uOutCrop is the crop rect in rotated
+// normalized space; uRotation is the 90-degree step count.
+uniform vec4 uOutCrop;         // xy = origin, zw = size
+uniform int uRotation;         // 0..3
+uniform float uOutAspect;      // output width / height
+
+uniform float uGrainAmount;    // 0..100
+uniform float uGrainSize;      // 0..100
+uniform float uGrainRoughness; // 0..100
+
+uniform float uVignetteAmount;    // -100..100
+uniform float uVignetteMidpoint;  // 0..100
+uniform float uVignetteFeather;   // 0..100
+uniform float uVignetteRoundness; // -100..100
 
 const float HUE_CENTERS[8] = float[8](0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 275.0, 315.0);
 
@@ -155,6 +172,80 @@ vec3 tintFromWheel(vec3 wheel) {
   return hsl2rgb(vec3(wheel.x, 1.0, 0.5));
 }
 
+// Maps a source-image UV into the rotated frame's UV space. Mirrors the
+// 90-degree steps rotateCanvas() applies in the geometry pass.
+vec2 rotateUV(vec2 uv, int rot) {
+  if (rot == 1) return vec2(1.0 - uv.y, uv.x);
+  if (rot == 2) return vec2(1.0 - uv.x, 1.0 - uv.y);
+  if (rot == 3) return vec2(uv.y, 1.0 - uv.x);
+  return uv;
+}
+
+// Cheap, stable value noise. Deterministic per output position, so the
+// grain pattern doesn't crawl between renders (or differ between the
+// half-res preview and the full-res export, since it's driven by
+// normalized output coordinates rather than pixels).
+float hash21(vec2 p) {
+  p = fract(p * vec2(123.34, 456.21));
+  p += dot(p, p + 45.32);
+  return fract(p.x * p.y);
+}
+
+float valueNoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f); // smoothstep interpolation
+  float a = hash21(i);
+  float b = hash21(i + vec2(1.0, 0.0));
+  float c = hash21(i + vec2(0.0, 1.0));
+  float d = hash21(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+// Film grain: monochrome noise scaled by how much midtone room there is
+// (real grain is least visible in deep blacks and blown highlights).
+vec3 applyGrain(vec3 color, vec2 outUV) {
+  if (uGrainAmount < 0.001) return color;
+  // Bigger uGrainSize -> fewer, larger cells.
+  float freq = mix(1400.0, 180.0, clamp(uGrainSize / 100.0, 0.0, 1.0));
+  vec2 p = vec2(outUV.x * uOutAspect, outUV.y) * freq;
+  float n = valueNoise(p);
+  // Roughness mixes in a coarser octave for a less uniform, more filmic
+  // structure.
+  float rough = clamp(uGrainRoughness / 100.0, 0.0, 1.0);
+  n = mix(n, (n + valueNoise(p * 0.37 + 19.7)) * 0.5, rough);
+  float lum = dot(color, vec3(0.299, 0.587, 0.114));
+  float tonalMask = 1.0 - abs(lum - 0.5) * 1.4;
+  float amount = (uGrainAmount / 100.0) * 0.28 * clamp(tonalMask, 0.15, 1.0);
+  return color + vec3((n - 0.5) * 2.0 * amount);
+}
+
+// Post-crop vignette, anchored to the output frame. Roundness morphs the
+// falloff shape between a rectangle-hugging superellipse and a circle.
+vec3 applyVignette(vec3 color, vec2 outUV) {
+  if (abs(uVignetteAmount) < 0.001) return color;
+  vec2 d = (outUV - 0.5) * 2.0; // -1..1 from the center
+  // Circular treats the frame as square (correcting for aspect); the
+  // rectangular end stretches the falloff to follow the frame edges.
+  float round01 = clamp(uVignetteRoundness / 100.0 * 0.5 + 0.5, 0.0, 1.0);
+  vec2 circular = vec2(d.x * uOutAspect, d.y) / max(uOutAspect, 1.0);
+  vec2 v = mix(d, circular, round01);
+  // Exponent 2 = ellipse, higher = squarer corners.
+  float e = mix(4.0, 2.0, round01);
+  float dist = pow(pow(abs(v.x), e) + pow(abs(v.y), e), 1.0 / e);
+
+  float mid = mix(0.25, 1.15, clamp(uVignetteMidpoint / 100.0, 0.0, 1.0));
+  float feather = mix(0.02, 0.9, clamp(uVignetteFeather / 100.0, 0.0, 1.0));
+  float mask = smoothstep(mid - feather, mid + feather * 0.35, dist);
+
+  float amt = uVignetteAmount / 100.0;
+  if (amt > 0.0) {
+    // Darken by multiplying, which keeps corner color relationships.
+    return color * (1.0 - mask * amt * 0.9);
+  }
+  return color + (1.0 - color) * mask * (-amt) * 0.75;
+}
+
 // Three-way color grading (split toning): a tint wheel each for shadows,
 // midtones and highlights, weighted by luminance. uGradeBlending widens
 // the transition between ranges; uGradeBalance shifts where shadows end
@@ -224,13 +315,15 @@ void main() {
   float contrast = 1.0 + uContrast / 100.0;
   color = (color - 0.5) * contrast + 0.5;
 
-  // Tone curve: applied identically to each channel. uCurveLUT is a 256x1
-  // texture (CLAMP_TO_EDGE + LINEAR), so values outside [0,1] — e.g. from
-  // the exposure boost above — sample the curve's end value rather than
-  // wrapping, and neighboring LUT entries blend smoothly.
+  // Tone curve. uCurveLUT is a 256x1 RGBA texture (CLAMP_TO_EDGE + LINEAR)
+  // where each channel holds the master curve already composed with that
+  // channel's own curve, so this is one sample per channel regardless of
+  // how many per-channel curves are in play. Values outside [0,1] — e.g.
+  // from the exposure boost above — clamp to the curve's end value rather
+  // than wrapping, and neighboring LUT entries blend smoothly.
   color.r = texture(uCurveLUT, vec2(color.r, 0.5)).r;
-  color.g = texture(uCurveLUT, vec2(color.g, 0.5)).r;
-  color.b = texture(uCurveLUT, vec2(color.b, 0.5)).r;
+  color.g = texture(uCurveLUT, vec2(color.g, 0.5)).g;
+  color.b = texture(uCurveLUT, vec2(color.b, 0.5)).b;
 
   // 8-way HSL color mixer.
   color = applyHSLMixer(color);
@@ -273,6 +366,14 @@ void main() {
   float vibFactor = 1.0 + (uVibrance / 100.0) * vibWeight;
   color = mix(vec3(gray2), color, vibFactor);
 
+  // Finishing effects, last and in output space: the vignette has to be
+  // anchored to the cropped frame (that's what "post-crop" means), and
+  // grain should sit on top of everything rather than being pushed around
+  // by the tone and color work above.
+  vec2 outUV = (rotateUV(vTexCoord, uRotation) - uOutCrop.xy) / max(uOutCrop.zw, vec2(0.0001));
+  color = applyVignette(color, outUV);
+  color = applyGrain(color, outUV);
+
   outColor = vec4(clamp(color, 0.0, 1.0), 1.0);
 }
 `;
@@ -314,6 +415,16 @@ interface Uniforms {
   uGradeHighlights: WebGLUniformLocation;
   uGradeBlending: WebGLUniformLocation;
   uGradeBalance: WebGLUniformLocation;
+  uOutCrop: WebGLUniformLocation;
+  uRotation: WebGLUniformLocation;
+  uOutAspect: WebGLUniformLocation;
+  uGrainAmount: WebGLUniformLocation;
+  uGrainSize: WebGLUniformLocation;
+  uGrainRoughness: WebGLUniformLocation;
+  uVignetteAmount: WebGLUniformLocation;
+  uVignetteMidpoint: WebGLUniformLocation;
+  uVignetteFeather: WebGLUniformLocation;
+  uVignetteRoundness: WebGLUniformLocation;
 }
 
 // Order must match HUE_CENTERS in the shader above.
@@ -413,6 +524,16 @@ export class ColorRenderer {
       uGradeHighlights: getLoc('uGradeHighlights'),
       uGradeBlending: getLoc('uGradeBlending'),
       uGradeBalance: getLoc('uGradeBalance'),
+      uOutCrop: getLoc('uOutCrop'),
+      uRotation: getLoc('uRotation'),
+      uOutAspect: getLoc('uOutAspect'),
+      uGrainAmount: getLoc('uGrainAmount'),
+      uGrainSize: getLoc('uGrainSize'),
+      uGrainRoughness: getLoc('uGrainRoughness'),
+      uVignetteAmount: getLoc('uVignetteAmount'),
+      uVignetteMidpoint: getLoc('uVignetteMidpoint'),
+      uVignetteFeather: getLoc('uVignetteFeather'),
+      uVignetteRoundness: getLoc('uVignetteRoundness'),
     };
   }
 
@@ -451,8 +572,8 @@ export class ColorRenderer {
     // previous recipe.
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.curveTexture);
-    const lut = buildCurveLUT(recipe.curve);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, lut.length, 1, 0, gl.RED, gl.UNSIGNED_BYTE, lut);
+    const lut = buildChannelLUTs(recipe.curve, recipe.curveR, recipe.curveG, recipe.curveB);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, lut.length / 4, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, lut);
     gl.uniform1i(this.uniforms.uCurveLUT, 1);
 
     gl.uniform1f(this.uniforms.uExposure, recipe.exposure);
@@ -495,6 +616,25 @@ export class ColorRenderer {
     gl.uniform1f(this.uniforms.uGradeBlending, recipe.gradeBlending);
     gl.uniform1f(this.uniforms.uGradeBalance, recipe.gradeBalance);
 
+    // Output-space framing, so the vignette and grain land on the cropped
+    // result rather than the full source frame.
+    const crop = recipe.crop ?? { x: 0, y: 0, width: 1, height: 1 };
+    gl.uniform4f(this.uniforms.uOutCrop, crop.x, crop.y, crop.width, crop.height);
+    gl.uniform1i(this.uniforms.uRotation, recipe.rotation);
+    const rotatedW = recipe.rotation === 1 || recipe.rotation === 3 ? image.height : image.width;
+    const rotatedH = recipe.rotation === 1 || recipe.rotation === 3 ? image.width : image.height;
+    const outW = Math.max(1, rotatedW * crop.width);
+    const outH = Math.max(1, rotatedH * crop.height);
+    gl.uniform1f(this.uniforms.uOutAspect, outW / outH);
+
+    gl.uniform1f(this.uniforms.uGrainAmount, recipe.grainAmount);
+    gl.uniform1f(this.uniforms.uGrainSize, recipe.grainSize);
+    gl.uniform1f(this.uniforms.uGrainRoughness, recipe.grainRoughness);
+    gl.uniform1f(this.uniforms.uVignetteAmount, recipe.vignetteAmount);
+    gl.uniform1f(this.uniforms.uVignetteMidpoint, recipe.vignetteMidpoint);
+    gl.uniform1f(this.uniforms.uVignetteFeather, recipe.vignetteFeather);
+    gl.uniform1f(this.uniforms.uVignetteRoundness, recipe.vignetteRoundness);
+
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     return this.canvas;
   }
@@ -530,15 +670,67 @@ function rotateCanvas(
   return { canvas, width: rw, height: rh };
 }
 
-/** Applies rotation + crop (the geometry pass) to a color-graded canvas and
- * returns the final canvas at output resolution. */
+/** The largest axis-aligned rectangle that fits inside a `w`x`h` rectangle
+ * rotated by `angle` radians. Used to auto-crop away the blank corners
+ * straightening would otherwise leave — the standard "rotated rect with
+ * max area" construction. */
+export function largestInscribedRect(
+  w: number,
+  h: number,
+  angle: number,
+): { width: number; height: number } {
+  if (w <= 0 || h <= 0) return { width: 0, height: 0 };
+  const sinA = Math.abs(Math.sin(angle));
+  const cosA = Math.abs(Math.cos(angle));
+  const longSide = Math.max(w, h);
+  const shortSide = Math.min(w, h);
+
+  if (shortSide <= 2 * sinA * cosA * longSide || Math.abs(sinA - cosA) < 1e-10) {
+    // The constrained case: the inscribed rect touches the midpoints of
+    // the rotated rect's sides.
+    const half = 0.5 * shortSide;
+    const wr = w >= h ? half / sinA : half / cosA;
+    const hr = w >= h ? half / cosA : half / sinA;
+    return { width: Math.min(w, wr), height: Math.min(h, hr) };
+  }
+
+  const cos2a = cosA * cosA - sinA * sinA;
+  return {
+    width: (w * cosA - h * sinA) / cos2a,
+    height: (h * cosA - w * sinA) / cos2a,
+  };
+}
+
+/** Applies the free-angle straighten: rotates the frame and trims back to
+ * the largest rectangle that contains no blank corners. */
+function straightenCanvas(input: RotatedCanvas, degrees: number): RotatedCanvas {
+  if (!degrees) return input;
+  const angle = (degrees * Math.PI) / 180;
+  const inscribed = largestInscribedRect(input.width, input.height, angle);
+  const outW = Math.max(1, Math.round(inscribed.width));
+  const outH = Math.max(1, Math.round(inscribed.height));
+
+  const canvas = new OffscreenCanvas(outW, outH);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not get 2D context');
+  ctx.translate(outW / 2, outH / 2);
+  ctx.rotate(angle);
+  ctx.drawImage(input.canvas, -input.width / 2, -input.height / 2);
+  return { canvas, width: outW, height: outH };
+}
+
+/** Applies rotation, straightening and crop (the geometry pass) to a
+ * color-graded canvas and returns the final canvas at output resolution. */
 export function applyGeometry(
   colorCanvas: OffscreenCanvas,
   srcW: number,
   srcH: number,
   recipe: EditRecipe,
 ): RotatedCanvas {
-  const rotated = rotateCanvas(colorCanvas, srcW, srcH, recipe.rotation);
+  const rotated = straightenCanvas(
+    rotateCanvas(colorCanvas, srcW, srcH, recipe.rotation),
+    recipe.straighten,
+  );
   if (!recipe.crop) return rotated;
 
   const { x, y, width, height } = recipe.crop;

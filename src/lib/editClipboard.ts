@@ -9,7 +9,12 @@ const KEY = 'photo-editor-clipboard-v1';
 
 /** Fields intentionally left out of copy/paste — geometry is specific to
  * one photo's framing and shouldn't jump to another. */
-const GEOMETRY_KEYS = new Set<keyof EditRecipe>(['rotation', 'crop']);
+const GEOMETRY_KEYS = new Set<keyof EditRecipe>([
+  'rotation',
+  'crop',
+  'cropAspect',
+  'straighten',
+]);
 
 export function copyRecipeToClipboard(recipe: EditRecipe): void {
   try {
@@ -46,6 +51,9 @@ export function pasteRecipeOnto(current: EditRecipe): EditRecipe | null {
       ...parsed,
       version: 1,
       curve: sanitizeCurve(parsed.curve),
+      curveR: sanitizeCurve(parsed.curveR),
+      curveG: sanitizeCurve(parsed.curveG),
+      curveB: sanitizeCurve(parsed.curveB),
       hsl: { ...d.hsl, ...parsed.hsl },
       gradeShadows: { ...d.gradeShadows, ...parsed.gradeShadows },
       gradeMidtones: { ...d.gradeMidtones, ...parsed.gradeMidtones },
