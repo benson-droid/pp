@@ -19,15 +19,26 @@ highlight tint wheels); detail tools (clarity, dehaze, sharpening, noise reducti
 finishing effects — **film grain** (amount/size/roughness) and a **post-crop vignette**
 (amount/midpoint/feather/roundness).
 
-**Framing:** scroll-to-zoom and drag-to-pan, 90° rotation, a **free-angle straighten** that
-auto-crops away the blank corners, and a crop tool with draggable handles, aspect-ratio presets,
-and a rule-of-thirds overlay.
+**Framing:** scroll-to-zoom and drag-to-pan, 90° rotation, **horizontal and vertical flip**, a
+**free-angle straighten** that auto-crops away the blank corners, and a crop tool with draggable
+handles, aspect-ratio presets, and a rule-of-thirds overlay.
 
 **Merging** several photos into one — exposure blending (HDR-look), focus stacking, panorama
 stitching, and layer/double-exposure compositing. See [Merging photos](#merging-photos).
 
-**Workflow:** live histogram, press-and-hold before/after, copy/paste edit settings between
-photos, and JPEG export. See [Roadmap](#roadmap) for what's not built yet.
+**Workflow:** live histogram, press-and-hold before/after, arrow-key navigation between photos
+without returning to the grid, copy/paste edit settings, and JPEG export. See
+[Roadmap](#roadmap) for what's not built yet.
+
+### Keyboard shortcuts
+
+| Key | Action |
+| --- | --- |
+| `←` / `→` | Previous / next photo |
+| `\` (hold) | Show the original for comparison |
+| `[` / `]` | Rotate left / right |
+| `H` / `V` | Flip horizontally / vertically |
+| `Esc` | Leave crop mode |
 
 ## Requirements
 
@@ -73,23 +84,45 @@ Four modes share one engine:
 
 | Mode | What it does |
 | --- | --- |
+| **Panorama** | Splices overlapping photos of one subject into a single image — including frames shot from **different positions and angles**, not just a flat pan. |
 | **Exposure blend** | Fuses a bracketed set into one evenly-exposed image, picking the best-exposed, most contrasty, most colorful pixels from each frame (a Mertens-style exposure fusion — no radiance map or tone-mapping step). |
 | **Focus stack** | Keeps whichever frame is sharpest in each region, for front-to-back sharpness in macro and deep-focus landscape work. |
-| **Panorama** | Aligns overlapping frames onto a shared canvas and blends the seams. |
 | **Layers** | Composites frames with a blend mode and opacity, for double exposures. |
 
-All four rest on the same two pieces: `src/lib/align.ts` estimates how frames line up, and
-`src/lib/pyramid.ts` does Laplacian multi-band blending so joins and transitions are invisible
-rather than showing as seams or ghosting.
+### How stitching works
+
+Panorama mode runs a full feature-based pipeline, because that is what it takes to line up
+photos taken from different viewpoints:
+
+1. **Detect and describe features** (`src/lib/features.ts`) — FAST corners over a scale pyramid,
+   an orientation per corner from its intensity centroid, and a 256-bit rotated BRIEF
+   descriptor. The orientation step is what buys rotation invariance.
+2. **Match** them between every pair of frames, filtered by Lowe's ratio test and a mutual
+   cross-check. Matching *all* pairs rather than assuming consecutive frames overlap means you
+   can select the photos in any order.
+3. **Fit a homography** per pair with RANSAC (`src/lib/homography.ts`). A homography has 8
+   degrees of freedom — translation, rotation, scale, shear and perspective — versus the 2 a
+   simple shift offers, which is precisely why this handles different angles. RANSAC matters as
+   much as the algebra: feature matching always leaves some wrong correspondences, and a plain
+   least-squares fit is dragged badly off by a handful of them.
+4. **Chain** those pairwise fits outward from the best-connected frame so everything lands in
+   one coordinate system, optionally projecting onto a cylinder for wide sweeps.
+5. **Warp and blend** (`src/lib/stitch.ts` + `src/lib/pyramid.ts`) — bilinear resampling into a
+   shared canvas, then Laplacian multi-band blending so the seams disappear.
+
+Exposure blend and focus stack take a simpler route: `src/lib/align.ts` estimates a translation
+between frames (enough for handheld drift), then the same multi-band blending combines them.
 
 **Known limits, stated plainly:**
 
-- **Alignment recovers translation only** — not rotation, scale, or perspective. For a steady
-  hand-held pan or the small drift between bracketed frames that's usually enough; frames with
-  real rotation or parallax will show misalignment. A full homography estimator (feature
-  detection + RANSAC) is the next step, and is a significant piece of work in its own right.
-- **Panoramas are not projected onto a cylinder or sphere**, so a wide sweep will bow rather
-  than sitting flat the way dedicated stitchers manage.
+- **Stitching needs real overlap and real texture.** Frames that share too little detail are
+  reported as unmatched and left out of the result rather than being forced into place.
+- **No bundle adjustment or exposure compensation.** Homographies are chained pairwise, so error
+  can accumulate across a long chain of frames, and frames shot at noticeably different
+  exposures may show brightness steps that the blend softens but does not remove.
+- **Parallax is not solved.** If you physically move between shots and the scene has strong
+  depth, near and far objects cannot both align — that is a limitation of any single-homography
+  stitcher, not just this one.
 - **Merging runs on the CPU in JavaScript**, so it works at a capped resolution (1200–2600px on
   the long edge, your choice) and blocks the UI while it runs. Moving it to a Web Worker and
   raising the ceiling is a worthwhile follow-up.
@@ -109,10 +142,13 @@ src/
     canvasUtils.ts         Thumbnail/export canvas helpers
     histogram.ts           Per-channel histogram sampling from a rendered canvas
     toneCurve.ts           Monotonic spline math + the composed RGB curve LUT
-    glPipeline.ts          WebGL2 color shader + rotation/straighten/crop geometry pass
+    glPipeline.ts          WebGL2 color shader + rotate/flip/straighten/crop geometry pass
     pyramid.ts             Gaussian/Laplacian pyramids + multi-band blending
     align.ts               Coarse-to-fine translation alignment between frames
-    merge.ts               The four merge modes, built on pyramid.ts + align.ts
+    features.ts            FAST corners, BRIEF descriptors, feature matching
+    homography.ts          Normalized DLT + RANSAC homography estimation
+    stitch.ts              Feature-based panorama stitching
+    merge.ts               The four merge modes
   components/
     FolderPicker.tsx       Landing screen / folder picker
     PhotoGrid.tsx           Thumbnail grid, with multi-select for merging
@@ -165,8 +201,8 @@ Not yet built, roughly in order of likely usefulness:
 - Batch export (apply/export edits across multiple selected photos at once).
 - Ratings, filtering, and undo/redo history beyond per-slider reset.
 - Split-view (drag divider) before/after, in addition to the current press-and-hold.
-- Full homography alignment (feature matching + RANSAC) and cylindrical projection, to lift
-  panorama stitching past translation-only.
+- Bundle adjustment and exposure compensation across stitched frames, to stop error accumulating
+  along a long chain and to even out brightness differences between shots.
 - Move merging into a Web Worker so it doesn't block the UI, and raise the resolution ceiling.
 - Local adjustment brushes / masks (a significant undertaking — full Lightroom parity here is a
   multi-person, multi-month effort, not a quick add-on).

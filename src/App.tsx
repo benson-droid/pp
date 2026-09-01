@@ -73,10 +73,18 @@ export default function App() {
   }
 
   if (selected) {
+    const index = photos.findIndex((p) => p.name === selected.name);
     return (
       <Editor
         photo={selected}
         dirHandle={dirHandle}
+        position={{ index: Math.max(0, index), total: photos.length }}
+        onNavigate={(delta) => {
+          if (photos.length < 2) return;
+          // Wrap around, so holding an arrow key cycles the shoot.
+          const next = (index + delta + photos.length) % photos.length;
+          setSelected(photos[next]);
+        }}
         onClose={() => {
           setSelected(null);
           refreshPhotos();

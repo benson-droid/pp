@@ -124,6 +124,11 @@ export interface EditRecipe {
   /** Rotation in 90-degree steps: 0, 1, 2, or 3 (clockwise). */
   rotation: 0 | 1 | 2 | 3;
 
+  /** Mirror the frame. Applied after rotation, so they read as "flip what
+   * I'm looking at" rather than flipping the original orientation. */
+  flipHorizontal: boolean;
+  flipVertical: boolean;
+
   /** Free-angle straightening in degrees (-45..45), applied after the
    * 90-degree rotation. The result is auto-cropped to the largest
    * same-aspect rectangle that fits inside the rotated frame, so no blank
@@ -187,6 +192,8 @@ export function defaultEditRecipe(): EditRecipe {
     vignetteFeather: 50,
     vignetteRoundness: 0,
     rotation: 0,
+    flipHorizontal: false,
+    flipVertical: false,
     straighten: 0,
     crop: null,
     cropAspect: null,

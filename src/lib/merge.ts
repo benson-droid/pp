@@ -8,14 +8,17 @@
  *                map or tone-mapping step to go wrong.
  *  - `focus`     Focus stacking: keep whichever frame is sharpest at each
  *                region, for front-to-back sharpness in macro/landscape.
- *  - `panorama`  Translation-align overlapping frames onto a shared
- *                canvas, then blend the seams multi-band.
+ *  - `panorama`  Splice overlapping frames of one subject into a single
+ *                image. Delegates to lib/stitch.ts, which fits a full
+ *                homography per pair so frames shot from different angles
+ *                still line up.
  *  - `layers`    Straight compositing of two or more frames with a blend
  *                mode and opacity — double exposures and the like.
  *
- * The first three all reduce to "weight each source per pixel, then
- * multi-band blend", which is why they share pyramid.ts. Only the weight
- * function differs.
+ * Exposure fusion and focus stacking both reduce to "weight each source
+ * per pixel, then multi-band blend", which is why they share pyramid.ts —
+ * only the weight function differs. Panorama needs real geometry first, so
+ * it lives in stitch.ts and comes back here only to be blended.
  */
 import {
   type FloatImage,
@@ -26,6 +29,7 @@ import {
   toGray,
 } from './pyramid';
 import { estimateTranslation } from './align';
+import { type StitchOptions, defaultStitchOptions, stitchPanorama } from './stitch';
 
 export type MergeMode = 'exposure' | 'focus' | 'panorama' | 'layers';
 
@@ -54,6 +58,9 @@ export interface MergeOptions {
   exposureWeight: number;
   /** focus mode only: size of the region sharpness is judged over. */
   focusRadius: number;
+  /** panorama mode only: project onto a cylinder before stitching, which
+   * keeps wide sweeps from stretching at the edges. */
+  cylindrical: boolean;
 }
 
 export function defaultMergeOptions(mode: MergeMode): MergeOptions {
@@ -66,11 +73,19 @@ export function defaultMergeOptions(mode: MergeMode): MergeOptions {
     saturationWeight: 100,
     exposureWeight: 100,
     focusRadius: 6,
+    cylindrical: false,
   };
 }
 
 export interface MergeProgress {
   (stage: string, fraction: number): void;
+}
+
+export interface MergeResult {
+  image: FloatImage;
+  /** Anything the user should know about the result — e.g. frames that
+   * couldn't be matched and were left out of a stitch. */
+  warnings: string[];
 }
 
 const EPS = 1e-6;
@@ -150,94 +165,6 @@ function normalizeWeights(weights: FloatImage[]): void {
 
 // --- Geometry helpers -----------------------------------------------------
 
-/** Copies `src` onto a `w`x`h` canvas at (ox, oy), returning the placed
- * image plus a coverage mask marking which pixels it actually filled. */
-function placeOnCanvas(
-  src: FloatImage,
-  w: number,
-  h: number,
-  ox: number,
-  oy: number,
-): { image: FloatImage; mask: FloatImage } {
-  const image = createImage(w, h, src.channels);
-  const mask = createImage(w, h, 1);
-  for (let y = 0; y < src.height; y++) {
-    const ty = y + oy;
-    if (ty < 0 || ty >= h) continue;
-    for (let x = 0; x < src.width; x++) {
-      const tx = x + ox;
-      if (tx < 0 || tx >= w) continue;
-      const s = (y * src.width + x) * src.channels;
-      const t = (ty * w + tx) * src.channels;
-      for (let c = 0; c < src.channels; c++) image.data[t + c] = src.data[s + c];
-      mask.data[ty * w + tx] = 1;
-    }
-  }
-  return { image, mask };
-}
-
-/**
- * Distance-to-edge weighting for a placed frame: pixels near the middle of
- * their source frame count more than pixels at its border, so a seam lands
- * where both frames are confident rather than at an abrupt cutoff.
- */
-function centerWeight(
-  srcW: number,
-  srcH: number,
-  canvasW: number,
-  canvasH: number,
-  ox: number,
-  oy: number,
-): FloatImage {
-  const out = createImage(canvasW, canvasH, 1);
-  for (let y = 0; y < srcH; y++) {
-    const ty = y + oy;
-    if (ty < 0 || ty >= canvasH) continue;
-    const dy = Math.min(y, srcH - 1 - y) / (srcH / 2);
-    for (let x = 0; x < srcW; x++) {
-      const tx = x + ox;
-      if (tx < 0 || tx >= canvasW) continue;
-      const dx = Math.min(x, srcW - 1 - x) / (srcW / 2);
-      // Multiply the two axes so corners fall off fastest.
-      out.data[ty * canvasW + tx] = Math.max(1e-4, dx * dy);
-    }
-  }
-  return out;
-}
-
-/** Crops away fully-uncovered borders left by panorama alignment. */
-function trimToCoverage(img: FloatImage, coverage: FloatImage): FloatImage {
-  let minX = img.width;
-  let minY = img.height;
-  let maxX = -1;
-  let maxY = -1;
-  for (let y = 0; y < img.height; y++) {
-    for (let x = 0; x < img.width; x++) {
-      if (coverage.data[y * img.width + x] > 0.5) {
-        if (x < minX) minX = x;
-        if (x > maxX) maxX = x;
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
-      }
-    }
-  }
-  if (maxX < minX || maxY < minY) return img;
-
-  const w = maxX - minX + 1;
-  const h = maxY - minY + 1;
-  if (w === img.width && h === img.height) return img;
-
-  const out = createImage(w, h, img.channels);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const s = ((y + minY) * img.width + (x + minX)) * img.channels;
-      const t = (y * w + x) * img.channels;
-      for (let c = 0; c < img.channels; c++) out.data[t + c] = img.data[s + c];
-    }
-  }
-  return out;
-}
-
 // --- Blend modes (layers) --------------------------------------------------
 
 function blendChannel(mode: BlendMode, base: number, top: number): number {
@@ -299,51 +226,6 @@ function mergeLayers(images: FloatImage[], o: MergeOptions): FloatImage {
   }
   for (let i = 0; i < out.data.length; i++) out.data[i] = Math.min(1, Math.max(0, out.data[i]));
   return out;
-}
-
-function mergePanorama(images: FloatImage[], progress?: MergeProgress): FloatImage {
-  // Chain the offsets: each frame is aligned to the one before it, then
-  // accumulated into a common coordinate space.
-  const positions: { x: number; y: number }[] = [{ x: 0, y: 0 }];
-  for (let i = 1; i < images.length; i++) {
-    progress?.(`Aligning frame ${i + 1} of ${images.length}`, (i / images.length) * 0.6);
-    const offset = estimateTranslation(images[i - 1], images[i], {
-      maxShiftFraction: 0.9,
-      minOverlapFraction: 0.08,
-    });
-    positions.push({ x: positions[i - 1].x + offset.dx, y: positions[i - 1].y + offset.dy });
-  }
-
-  // Size the canvas to the union of all placements.
-  const minX = Math.min(...positions.map((p) => p.x));
-  const minY = Math.min(...positions.map((p) => p.y));
-  const maxX = Math.max(...positions.map((p, i) => p.x + images[i].width));
-  const maxY = Math.max(...positions.map((p, i) => p.y + images[i].height));
-  const canvasW = Math.max(1, Math.round(maxX - minX));
-  const canvasH = Math.max(1, Math.round(maxY - minY));
-
-  progress?.('Blending seams', 0.7);
-
-  const placed: FloatImage[] = [];
-  const weights: FloatImage[] = [];
-  const coverage = createImage(canvasW, canvasH, 1);
-
-  for (let i = 0; i < images.length; i++) {
-    const ox = Math.round(positions[i].x - minX);
-    const oy = Math.round(positions[i].y - minY);
-    const { image, mask } = placeOnCanvas(images[i], canvasW, canvasH, ox, oy);
-    placed.push(image);
-    const w = centerWeight(images[i].width, images[i].height, canvasW, canvasH, ox, oy);
-    // Zero the weight wherever this frame contributed nothing at all.
-    for (let p = 0; p < w.data.length; p++) {
-      w.data[p] *= mask.data[p];
-      coverage.data[p] = Math.max(coverage.data[p], mask.data[p]);
-    }
-    weights.push(w);
-  }
-
-  const blended = mergeWeighted(placed, weights, progress);
-  return trimToCoverage(blended, coverage);
 }
 
 /** Aligns every frame onto the first, cropping all of them to the region
@@ -411,14 +293,26 @@ export function mergeImages(
   inputs: FloatImage[],
   options: MergeOptions,
   progress?: MergeProgress,
-): FloatImage {
+): MergeResult {
   if (inputs.length === 0) throw new Error('Select at least one photo to merge');
-  if (inputs.length === 1) return inputs[0];
+  if (inputs.length === 1) return { image: inputs[0], warnings: [] };
 
   progress?.('Preparing', 0.05);
 
   if (options.mode === 'panorama') {
-    return mergePanorama(unifySizes(inputs), progress);
+    // Full feature-based stitching: handles frames shot from different
+    // positions and angles, which the translation-only path cannot.
+    const stitchOptions: StitchOptions = { ...defaultStitchOptions, cylindrical: options.cylindrical };
+    const result = stitchPanorama(inputs, stitchOptions, progress);
+    const warnings: string[] = [];
+    if (result.skipped.length > 0) {
+      const names = result.skipped.map((i) => `#${i + 1}`).join(', ');
+      warnings.push(
+        `${result.skipped.length} photo${result.skipped.length === 1 ? '' : 's'} (${names}) ` +
+          "couldn't be matched to the rest and were left out.",
+      );
+    }
+    return { image: result.image, warnings };
   }
 
   let images = unifySizes(inputs);
@@ -428,14 +322,14 @@ export function mergeImages(
 
   if (options.mode === 'layers') {
     progress?.('Compositing', 0.7);
-    return mergeLayers(images, options);
+    return { image: mergeLayers(images, options), warnings: [] };
   }
 
   progress?.('Weighting frames', 0.55);
   const weights = images.map((img) =>
     options.mode === 'exposure' ? exposureFusionWeights(img, options) : focusWeights(img, options),
   );
-  return mergeWeighted(images, weights, progress);
+  return { image: mergeWeighted(images, weights, progress), warnings: [] };
 }
 
 export const MERGE_MODE_LABELS: Record<MergeMode, string> = {
@@ -448,6 +342,6 @@ export const MERGE_MODE_LABELS: Record<MergeMode, string> = {
 export const MERGE_MODE_HINTS: Record<MergeMode, string> = {
   exposure: 'Merges bracketed shots of the same scene into one evenly-exposed image.',
   focus: 'Keeps the sharpest parts of each frame — for macro and deep-focus landscapes.',
-  panorama: 'Stitches overlapping frames side by side. Recovers panning, not rotation or perspective.',
+  panorama: 'Splices overlapping photos of the same subject into one image, including shots taken from different angles.',
   layers: 'Stacks frames with a blend mode, for double exposures and composites.',
 };

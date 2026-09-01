@@ -70,6 +70,7 @@ uniform float uGradeBalance;   // -100..100
 // normalized space; uRotation is the 90-degree step count.
 uniform vec4 uOutCrop;         // xy = origin, zw = size
 uniform int uRotation;         // 0..3
+uniform vec2 uFlip;            // 1.0 on an axis that's mirrored
 uniform float uOutAspect;      // output width / height
 
 uniform float uGrainAmount;    // 0..100
@@ -179,6 +180,13 @@ vec2 rotateUV(vec2 uv, int rot) {
   if (rot == 2) return vec2(1.0 - uv.x, 1.0 - uv.y);
   if (rot == 3) return vec2(uv.y, 1.0 - uv.x);
   return uv;
+}
+
+// Mirrors, matching flipCanvas() in the geometry pass. Applied after
+// rotation so the vignette and grain stay anchored to the frame the user
+// is actually looking at.
+vec2 flipUV(vec2 uv, vec2 flip) {
+  return mix(uv, 1.0 - uv, flip);
 }
 
 // Cheap, stable value noise. Deterministic per output position, so the
@@ -370,7 +378,8 @@ void main() {
   // anchored to the cropped frame (that's what "post-crop" means), and
   // grain should sit on top of everything rather than being pushed around
   // by the tone and color work above.
-  vec2 outUV = (rotateUV(vTexCoord, uRotation) - uOutCrop.xy) / max(uOutCrop.zw, vec2(0.0001));
+  vec2 framedUV = flipUV(rotateUV(vTexCoord, uRotation), uFlip);
+  vec2 outUV = (framedUV - uOutCrop.xy) / max(uOutCrop.zw, vec2(0.0001));
   color = applyVignette(color, outUV);
   color = applyGrain(color, outUV);
 
@@ -417,6 +426,7 @@ interface Uniforms {
   uGradeBalance: WebGLUniformLocation;
   uOutCrop: WebGLUniformLocation;
   uRotation: WebGLUniformLocation;
+  uFlip: WebGLUniformLocation;
   uOutAspect: WebGLUniformLocation;
   uGrainAmount: WebGLUniformLocation;
   uGrainSize: WebGLUniformLocation;
@@ -526,6 +536,7 @@ export class ColorRenderer {
       uGradeBalance: getLoc('uGradeBalance'),
       uOutCrop: getLoc('uOutCrop'),
       uRotation: getLoc('uRotation'),
+      uFlip: getLoc('uFlip'),
       uOutAspect: getLoc('uOutAspect'),
       uGrainAmount: getLoc('uGrainAmount'),
       uGrainSize: getLoc('uGrainSize'),
@@ -621,6 +632,11 @@ export class ColorRenderer {
     const crop = recipe.crop ?? { x: 0, y: 0, width: 1, height: 1 };
     gl.uniform4f(this.uniforms.uOutCrop, crop.x, crop.y, crop.width, crop.height);
     gl.uniform1i(this.uniforms.uRotation, recipe.rotation);
+    gl.uniform2f(
+      this.uniforms.uFlip,
+      recipe.flipHorizontal ? 1 : 0,
+      recipe.flipVertical ? 1 : 0,
+    );
     const rotatedW = recipe.rotation === 1 || recipe.rotation === 3 ? image.height : image.width;
     const rotatedH = recipe.rotation === 1 || recipe.rotation === 3 ? image.width : image.height;
     const outW = Math.max(1, rotatedW * crop.width);
@@ -701,6 +717,19 @@ export function largestInscribedRect(
   };
 }
 
+/** Mirrors the frame horizontally and/or vertically. */
+function flipCanvas(input: RotatedCanvas, horizontal: boolean, vertical: boolean): RotatedCanvas {
+  if (!horizontal && !vertical) return input;
+  const { width, height } = input;
+  const canvas = new OffscreenCanvas(width, height);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not get 2D context');
+  ctx.translate(horizontal ? width : 0, vertical ? height : 0);
+  ctx.scale(horizontal ? -1 : 1, vertical ? -1 : 1);
+  ctx.drawImage(input.canvas, 0, 0);
+  return { canvas, width, height };
+}
+
 /** Applies the free-angle straighten: rotates the frame and trims back to
  * the largest rectangle that contains no blank corners. */
 function straightenCanvas(input: RotatedCanvas, degrees: number): RotatedCanvas {
@@ -727,8 +756,14 @@ export function applyGeometry(
   srcH: number,
   recipe: EditRecipe,
 ): RotatedCanvas {
+  // Order matters and mirrors how the shader maps output space: rotate,
+  // then mirror, then straighten, then crop.
   const rotated = straightenCanvas(
-    rotateCanvas(colorCanvas, srcW, srcH, recipe.rotation),
+    flipCanvas(
+      rotateCanvas(colorCanvas, srcW, srcH, recipe.rotation),
+      recipe.flipHorizontal,
+      recipe.flipVertical,
+    ),
     recipe.straighten,
   );
   if (!recipe.crop) return rotated;

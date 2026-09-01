@@ -82,6 +82,7 @@ export default function MergeView({ photos, dirHandle, onClose }: MergeViewProps
   const [stage, setStage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<FloatImage | null>(null);
+  const [warnings, setWarnings] = useState<string[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -113,6 +114,7 @@ export default function MergeView({ photos, dirHandle, onClose }: MergeViewProps
     setBusy(true);
     setError(null);
     setResult(null);
+    setWarnings([]);
     setMessage(null);
     try {
       setStage('Decoding photos');
@@ -134,7 +136,8 @@ export default function MergeView({ photos, dirHandle, onClose }: MergeViewProps
       const merged = mergeImages(images, { ...options, mode }, (s) => {
         setStage(s);
       });
-      setResult(merged);
+      setResult(merged.image);
+      setWarnings(merged.warnings);
       setStage(null);
     } catch (err) {
       console.error(err);
@@ -214,6 +217,15 @@ export default function MergeView({ photos, dirHandle, onClose }: MergeViewProps
             </div>
           )}
           <canvas ref={canvasRef} className="merge-result" hidden={!result || busy} />
+          {!busy && result && warnings.length > 0 && (
+            <div className="merge-warnings">
+              {warnings.map((w) => (
+                <p key={w} className="warning">
+                  {w}
+                </p>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="editor-panel">
@@ -241,6 +253,23 @@ export default function MergeView({ photos, dirHandle, onClose }: MergeViewProps
                 />
                 <span>Auto-align frames</span>
               </label>
+            )}
+
+            {mode === 'panorama' && (
+              <>
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={options.cylindrical}
+                    onChange={(e) => update({ cylindrical: e.target.checked })}
+                  />
+                  <span>Cylindrical projection</span>
+                </label>
+                <p className="panel-hint muted">
+                  Turn this on for a wide sweep across a scene; leave it off for a handful of
+                  shots of one subject.
+                </p>
+              </>
             )}
 
             {mode === 'exposure' && (

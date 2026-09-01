@@ -25,6 +25,10 @@ interface EditorProps {
   dirHandle: FileSystemDirectoryHandle | null;
   onClose: () => void;
   onSaved: () => void;
+  /** Position in the library, for the "3 of 24" readout. */
+  position: { index: number; total: number };
+  /** Step to the previous/next photo without going back to the grid. */
+  onNavigate: (delta: 1 | -1) => void;
 }
 
 const SAVE_DEBOUNCE_MS = 600;
@@ -42,7 +46,14 @@ const ASPECT_PRESETS: { label: string; value: number | null | 0 }[] = [
   { label: '16:9', value: 16 / 9 },
 ];
 
-export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorProps) {
+export default function Editor({
+  photo,
+  dirHandle,
+  onClose,
+  onSaved,
+  position,
+  onNavigate,
+}: EditorProps) {
   const [decoded, setDecoded] = useState<DecodedImage | null>(null);
   const [recipe, setRecipe] = useState<EditRecipe>(defaultEditRecipe());
   const [loading, setLoading] = useState(true);
@@ -117,7 +128,14 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
     // rectangle has something to sit on. Holding "Before" swaps in a
     // default recipe for comparison.
     const effectiveRecipe = showOriginal
-      ? { ...defaultEditRecipe(), rotation: recipe.rotation, straighten: recipe.straighten, crop: recipe.crop }
+      ? {
+          ...defaultEditRecipe(),
+          rotation: recipe.rotation,
+          flipHorizontal: recipe.flipHorizontal,
+          flipVertical: recipe.flipVertical,
+          straighten: recipe.straighten,
+          crop: recipe.crop,
+        }
       : cropMode
         ? { ...recipe, crop: null }
         : recipe;
@@ -134,21 +152,66 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
     setHistogram(computeHistogram(ctx, canvas.width, canvas.height));
   }, [decoded, recipe, cropMode, showOriginal, getRenderer]);
 
-  // Hold "\" to peek at the original, like Lightroom's before/after toggle.
+  // Keyboard: hold "\" to peek at the original (Lightroom's before/after),
+  // arrows to move through the library, single keys for framing.
   useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === '\\' && !e.repeat) setShowOriginal(true);
+    function isTyping(target: EventTarget | null): boolean {
+      const el = target as HTMLElement | null;
+      return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
     }
+
+    function onKeyDown(e: KeyboardEvent) {
+      if (isTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey) return;
+
+      if (e.key === '\\' && !e.repeat) {
+        setShowOriginal(true);
+        return;
+      }
+      if (e.repeat) return;
+
+      switch (e.key) {
+        case 'ArrowLeft':
+          e.preventDefault();
+          onNavigate(-1);
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          onNavigate(1);
+          break;
+        case '[':
+          rotate(-1);
+          break;
+        case ']':
+          rotate(1);
+          break;
+        case 'h':
+        case 'H':
+          setRecipe((r) => ({ ...r, flipHorizontal: !r.flipHorizontal }));
+          break;
+        case 'v':
+        case 'V':
+          setRecipe((r) => ({ ...r, flipVertical: !r.flipVertical }));
+          break;
+        case 'Escape':
+          if (cropMode) exitCropMode();
+          break;
+        default:
+          break;
+      }
+    }
+
     function onKeyUp(e: KeyboardEvent) {
       if (e.key === '\\') setShowOriginal(false);
     }
+
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onNavigate, cropMode]);
 
   // Debounced save to the local catalog whenever the recipe changes (but
   // not on the initial load, which would otherwise write back an
@@ -170,6 +233,8 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
     setRecipe((r) => ({
       ...defaultEditRecipe(),
       rotation: r.rotation,
+      flipHorizontal: r.flipHorizontal,
+      flipVertical: r.flipVertical,
       straighten: r.straighten,
       crop: r.crop,
       cropAspect: r.cropAspect,
@@ -177,7 +242,12 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
   }
 
   function rotate(dir: 1 | -1) {
-    setRecipe((r) => ({ ...r, rotation: (((r.rotation + dir) % 4) + 4) as 0 | 1 | 2 | 3 }));
+    // The +4 before the modulo keeps a left-rotation from going negative;
+    // the modulo after it is what actually wraps 3 -> 0. Missing that
+    // second step produced rotation values of 4 and 5, which no other code
+    // recognises as a rotation at all — so rotating right silently did
+    // nothing.
+    setRecipe((r) => ({ ...r, rotation: ((r.rotation + dir + 4) % 4) as 0 | 1 | 2 | 3 }));
   }
 
   function handleCopySettings() {
@@ -320,13 +390,29 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
   const detailModified =
     recipe.clarity !== 0 || recipe.dehaze !== 0 || recipe.sharpen !== 0 || recipe.noiseReduction !== 0;
   const effectsModified = recipe.grainAmount !== 0 || recipe.vignetteAmount !== 0;
-  const geometryModified = recipe.rotation !== 0 || recipe.straighten !== 0 || recipe.crop !== null;
+  const geometryModified =
+    recipe.rotation !== 0 ||
+    recipe.straighten !== 0 ||
+    recipe.crop !== null ||
+    recipe.flipHorizontal ||
+    recipe.flipVertical;
 
   return (
     <div className="editor-view">
       <header className="editor-header">
         <button onClick={onClose}>&larr; Back to grid</button>
+        <div className="editor-nav">
+          <button onClick={() => onNavigate(-1)} disabled={position.total < 2} title="Previous photo (←)">
+            &lsaquo;
+          </button>
+          <button onClick={() => onNavigate(1)} disabled={position.total < 2} title="Next photo (→)">
+            &rsaquo;
+          </button>
+        </div>
         <strong>{photo.name}</strong>
+        <span className="muted editor-position">
+          {position.index + 1} of {position.total}
+        </span>
         <div className="editor-header-actions">
           {!cropMode && (
             <div className="zoom-controls">
@@ -435,8 +521,28 @@ export default function Editor({ photo, dirHandle, onClose, onSaved }: EditorPro
 
           <PanelSection title="Geometry" modified={geometryModified}>
             <div className="button-row">
-              <button onClick={() => rotate(-1)}>Rotate ⟲</button>
-              <button onClick={() => rotate(1)}>Rotate ⟳</button>
+              <button onClick={() => rotate(-1)} title="Rotate left ( [ )">
+                Rotate ⟲
+              </button>
+              <button onClick={() => rotate(1)} title="Rotate right ( ] )">
+                Rotate ⟳
+              </button>
+            </div>
+            <div className="button-row">
+              <button
+                className={recipe.flipHorizontal ? 'active' : ''}
+                onClick={() => updateRecipe({ flipHorizontal: !recipe.flipHorizontal })}
+                title="Flip horizontally (H)"
+              >
+                Flip ⇋
+              </button>
+              <button
+                className={recipe.flipVertical ? 'active' : ''}
+                onClick={() => updateRecipe({ flipVertical: !recipe.flipVertical })}
+                title="Flip vertically (V)"
+              >
+                Flip ⇵
+              </button>
             </div>
             <div className="button-row">
               <button className={cropMode ? 'active' : ''} onClick={cropMode ? exitCropMode : enterCropMode}>
