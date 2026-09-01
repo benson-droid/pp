@@ -84,7 +84,6 @@ export default function App() {
       onOpen={setSelected}
       onPickAnotherFolder={handleStartOver}
       folderName={dirHandle ? dirHandle.name : `${photos.length} file${photos.length === 1 ? '' : 's'}`}
-      note={dirHandle ? undefined : 'edits not auto-saved'}
     />
   );
 }

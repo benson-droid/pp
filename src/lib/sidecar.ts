@@ -13,10 +13,10 @@ function mergeOntoDefaults(parsed: Partial<EditRecipe>): EditRecipe {
     ...parsed,
     version: 1,
     curve: sanitizeCurve(parsed.curve),
-    hsl: { ...d.hsl, ...(parsed.hsl ?? {}) },
-    gradeShadows: { ...d.gradeShadows, ...(parsed.gradeShadows ?? {}) },
-    gradeMidtones: { ...d.gradeMidtones, ...(parsed.gradeMidtones ?? {}) },
-    gradeHighlights: { ...d.gradeHighlights, ...(parsed.gradeHighlights ?? {}) },
+    hsl: { ...d.hsl, ...parsed.hsl },
+    gradeShadows: { ...d.gradeShadows, ...parsed.gradeShadows },
+    gradeMidtones: { ...d.gradeMidtones, ...parsed.gradeMidtones },
+    gradeHighlights: { ...d.gradeHighlights, ...parsed.gradeHighlights },
   };
 }
 

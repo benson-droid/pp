@@ -334,3 +334,133 @@ canvas.crop-cursor {
 .reset-all {
   width: 100%;
 }
+
+/* --- Histogram --------------------------------------------------------- */
+
+.histogram-canvas {
+  display: block;
+  width: 100%;
+  height: 72px;
+  background: #0e0f12;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+/* --- Before/after --------------------------------------------------------- */
+
+.before-badge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  padding: 3px 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: rgba(0, 0, 0, 0.6);
+  color: var(--text-h);
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+/* --- HSL color mixer --------------------------------------------------- */
+
+.hsl-mixer {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hsl-swatch-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.hsl-swatch {
+  position: relative;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid transparent;
+}
+
+.hsl-swatch.active {
+  border-color: var(--text-h);
+}
+
+.hsl-swatch-dot {
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--text-h);
+}
+
+/* --- Color grading wheels ------------------------------------------------ */
+
+.color-wheel-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.color-wheel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+}
+
+.color-wheel-label {
+  font-size: 11px;
+  color: #8a8d96;
+}
+
+.color-wheel-dial {
+  position: relative;
+  border-radius: 50%;
+  touch-action: none;
+  cursor: crosshair;
+  background: conic-gradient(
+    from 180deg,
+    #ff3b3b,
+    #ff9a3b,
+    #ffe93b,
+    #6dff3b,
+    #3bffd0,
+    #3b9aff,
+    #7a3bff,
+    #ff3bd0,
+    #ff3b3b
+  );
+}
+
+.color-wheel-dial::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(29, 30, 35, 0.95) 0%, rgba(29, 30, 35, 0) 70%);
+}
+
+.color-wheel-dot {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  margin-left: -4px;
+  margin-top: -4px;
+  border-radius: 50%;
+  border: 1.5px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+
+.color-wheel .slider-row {
+  width: 100%;
+}

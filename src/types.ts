@@ -9,6 +9,51 @@ export interface CurvePoint {
   y: number;
 }
 
+/** A hue/saturation/luminance nudge, in the same shape used by both the
+ * 8-way HSL color mixer and the 3-way (shadows/mid/highlights) color
+ * grading wheels. */
+export interface WheelColor {
+  hue: number; // 0..360, degrees
+  sat: number; // 0..100
+  lum: number; // -100..100
+}
+
+/** The 8 hue ranges the color mixer lets you nudge independently,
+ * matching Lightroom's HSL panel. Order controls the swatch row and the
+ * order channels are packed into the shader's uniform buffer. */
+export const HSL_CHANNEL_NAMES = [
+  'red',
+  'orange',
+  'yellow',
+  'green',
+  'aqua',
+  'blue',
+  'purple',
+  'magenta',
+] as const;
+
+export type HSLChannelName = (typeof HSL_CHANNEL_NAMES)[number];
+
+/** Per-channel hue/saturation/luminance offsets for the 8-way color
+ * mixer. Each channel's `hue` field here is a *shift* (-100..100), not an
+ * absolute hue like `WheelColor.hue` — the mixer nudges within a hue
+ * range rather than picking a hue on a wheel. */
+export type HSLMixer = Record<HSLChannelName, { hue: number; sat: number; lum: number }>;
+
+function defaultHSLMixer(): HSLMixer {
+  const channel = { hue: 0, sat: 0, lum: 0 };
+  return {
+    red: { ...channel },
+    orange: { ...channel },
+    yellow: { ...channel },
+    green: { ...channel },
+    aqua: { ...channel },
+    blue: { ...channel },
+    purple: { ...channel },
+    magenta: { ...channel },
+  };
+}
+
 /** A single nondestructive edit "recipe" for one photo — mirrors the idea of
  * a Lightroom XMP sidecar: the original file is never modified, only this
  * small JSON is written/read next to it. */
@@ -31,12 +76,40 @@ export interface EditRecipe {
    * at least 2 points spanning x=0..x=1; see src/lib/toneCurve.ts. */
   curve: CurvePoint[];
 
+  /** 8-way HSL color mixer — independent hue/sat/lum nudges per color
+   * range. See lib/glPipeline.ts for how it's applied in the shader. */
+  hsl: HSLMixer;
+
+  /** 3-way color grading (a.k.a. split toning), one tint wheel each for
+   * shadows/midtones/highlights, luminance-weighted so each wheel affects
+   * mainly its own tonal range. */
+  gradeShadows: WheelColor;
+  gradeMidtones: WheelColor;
+  gradeHighlights: WheelColor;
+  /** How smoothly the three grading ranges blend into each other. 0..100,
+   * matching Lightroom's "Blending" control. */
+  gradeBlending: number;
+  /** Shifts where the shadow/highlight ranges are centered, independent of
+   * midtones. -100..100, matching Lightroom's "Balance" control. */
+  gradeBalance: number;
+
+  /** Detail tools — all approximations built from a shared 3x3-neighborhood
+   * "detail" signal (see glPipeline.ts), not true multi-scale algorithms. */
+  clarity: number; // -100..100, local midtone contrast
+  dehaze: number; // -100..100, negative = add haze, positive = remove it
+  sharpen: number; // 0..100, edge enhancement
+  noiseReduction: number; // 0..100, blends toward a local blur
+
   /** Rotation in 90-degree steps: 0, 1, 2, or 3 (clockwise). */
   rotation: 0 | 1 | 2 | 3;
 
   /** Crop rectangle in normalized (0..1) coordinates, relative to the
    * image *after* rotation is applied. `null` means no crop. */
   crop: { x: number; y: number; width: number; height: number } | null;
+}
+
+function defaultWheelColor(): WheelColor {
+  return { hue: 0, sat: 0, lum: 0 };
 }
 
 export function defaultEditRecipe(): EditRecipe {
@@ -56,6 +129,16 @@ export function defaultEditRecipe(): EditRecipe {
       { x: 0, y: 0 },
       { x: 1, y: 1 },
     ],
+    hsl: defaultHSLMixer(),
+    gradeShadows: defaultWheelColor(),
+    gradeMidtones: defaultWheelColor(),
+    gradeHighlights: defaultWheelColor(),
+    gradeBlending: 50,
+    gradeBalance: 0,
+    clarity: 0,
+    dehaze: 0,
+    sharpen: 0,
+    noiseReduction: 0,
     rotation: 0,
     crop: null,
   };
@@ -71,10 +154,6 @@ export interface PhotoEntry {
   fileHandle: FileSystemFileHandle;
   /** Handle for the JSON sidecar file (may not exist on disk yet). */
   sidecarName: string;
-  /** Populated lazily once a thumbnail has been generated. */
-  thumbnailUrl?: string;
-  /** True once we know a sidecar file exists on disk (i.e. photo has edits). */
-  hasEdits?: boolean;
 }
 
 /** Decoded pixel data ready to hand to WebGL, regardless of source format. */
