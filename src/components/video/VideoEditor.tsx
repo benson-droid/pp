@@ -5,9 +5,9 @@ import type { Clip, VideoProject, VideoSource } from '../../video/types';
 import { createClip, emptyProject } from '../../video/types';
 import { VideoPool, loadVideoSource } from '../../video/sources';
 import { TimelineRenderer } from '../../video/renderer';
-import { layoutTimeline, projectDuration } from '../../video/timeline';
+import { frameCount, layoutTimeline, projectDuration } from '../../video/timeline';
 import { type ExportFormat, type FormatSupport, exportTimeline, probeFormats } from '../../video/export';
-import { saveBlobWithPicker } from '../../lib/fileAccess';
+import { beginSave } from '../../lib/fileAccess';
 import Timeline from './Timeline';
 import ClipInspector from './ClipInspector';
 import Slider from '../Slider';
@@ -289,6 +289,17 @@ export default function VideoEditor() {
   async function handleExport() {
     const pool = poolRef.current;
     if (!pool) return;
+
+    // Reserve the destination FIRST, while the click is still an active
+    // user gesture. Asking after the render finishes fails with "Must be
+    // handling a user gesture" and throws away the whole export.
+    const target = await beginSave(`timeline.${format}`, {
+      description: format === 'mp4' ? 'MP4 video' : 'WebM video',
+      mime: format === 'mp4' ? 'video/mp4' : 'video/webm',
+      extensions: [`.${format}`],
+    });
+    if (!target) return; // cancelled
+
     setExporting(true);
     setPlaying(false);
     cancelRef.current = false;
@@ -307,9 +318,10 @@ export default function VideoEditor() {
         },
         shouldCancel: () => cancelRef.current,
       });
-      await saveBlobWithPicker(result.blob, result.fileName);
+      await target.write(result.blob);
+      const mb = (result.blob.size / 1_000_000).toFixed(1);
       setMessage(
-        `Exported ${result.frames} frames (${result.durationSeconds.toFixed(1)}s)${result.hasAudio ? ' with audio' : ''}`,
+        `Saved ${target.fileName} — ${result.frames} frames, ${result.durationSeconds.toFixed(1)}s, ${mb} MB${result.hasAudio ? ', with audio' : ''}`,
       );
     } catch (err) {
       if ((err as DOMException)?.name === 'AbortError') {
@@ -323,6 +335,12 @@ export default function VideoEditor() {
       setExportStage(null);
     }
   }
+
+  const totalFrames = frameCount(project);
+  // Rough heuristic: cost scales with pixels x frames. Past this point the
+  // export is minutes rather than seconds, which is worth warning about
+  // BEFORE the user commits to it.
+  const heavyExport = totalFrames * project.width * project.height > 600_000_000;
 
   const previewAspect = useMemo(
     () => `${project.width || 16} / ${project.height || 9}`,
@@ -428,7 +446,7 @@ export default function VideoEditor() {
           />
         </div>
 
-        {selectedClip ? (
+        {selectedClip && (
           <ClipInspector
             clip={selectedClip}
             source={sources.get(selectedClip.sourceId)}
@@ -437,8 +455,12 @@ export default function VideoEditor() {
             onChange={(patch) => updateClip(selectedClip.id, patch)}
             onRecipeChange={(patch) => updateRecipe(selectedClip.id, patch)}
           />
-        ) : (
-          <div className="editor-panel">
+        )}
+
+        {/* Project and export settings are always reachable. They used to
+            render only when no clip was selected — but a clip is always
+            selected after importing, so these controls were unreachable. */}
+        <div className="editor-panel project-panel">
             <PanelSection title="Project">
               <div className="panel-subhead">Resolution</div>
               <div className="preset-row">
@@ -562,13 +584,26 @@ export default function VideoEditor() {
                 defaultValue={8}
                 onChange={setBitrateMbps}
               />
+
+              {project.clips.length > 0 && (
+                <>
+                  <p className="panel-hint muted">
+                    {totalFrames} frames at {project.width}×{project.height}.
+                  </p>
+                  {heavyExport && (
+                    <p className="panel-hint warning">
+                      That's a big render — every frame is decoded, graded and re-encoded, so this
+                      will take a while. Dropping to 1080p or a lower frame rate is much faster.
+                    </p>
+                  )}
+                </>
+              )}
             </PanelSection>
 
-            {project.clips.length > 0 && (
-              <p className="panel-hint muted">Select a clip on the timeline to edit it.</p>
-            )}
-          </div>
-        )}
+          {project.clips.length > 0 && !selectedClip && (
+            <p className="panel-hint muted">Select a clip on the timeline to edit it.</p>
+          )}
+        </div>
       </div>
     </div>
   );

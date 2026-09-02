@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { DecodedImage, PhotoEntry } from '../types';
 import { decodeFull } from '../lib/imageDecode';
 import { canvasToBlob } from '../lib/canvasUtils';
-import { saveBlobWithPicker, writeExportedFile } from '../lib/fileAccess';
+import { JPEG_ACCEPT, beginSave, writeExportedFile } from '../lib/fileAccess';
 import { type FloatImage, floatToImageData, imageDataToFloat } from '../lib/pyramid';
 import {
   type BlendMode,
@@ -151,6 +151,13 @@ export default function MergeView({ photos, dirHandle, onClose }: MergeViewProps
   async function handleExport() {
     const canvas = canvasRef.current;
     if (!canvas || !result) return;
+
+    const base = photos[0].name.replace(/\.[^.]+$/, '');
+    const fileName = `${base}-${mode}.jpg`;
+    // Reserved before any await, so the picker still has a live gesture.
+    const target = dirHandle ? null : await beginSave(fileName, JPEG_ACCEPT);
+    if (!dirHandle && !target) return; // cancelled
+
     try {
       const off = new OffscreenCanvas(result.width, result.height);
       const ctx = off.getContext('2d');
@@ -158,14 +165,12 @@ export default function MergeView({ photos, dirHandle, onClose }: MergeViewProps
       ctx.putImageData(floatToImageData(result), 0, 0);
       const blob = await canvasToBlob(off, 'image/jpeg', 0.92);
 
-      const base = photos[0].name.replace(/\.[^.]+$/, '');
-      const fileName = `${base}-${mode}.jpg`;
       if (dirHandle) {
         await writeExportedFile(dirHandle, fileName, blob);
         setMessage(`Saved edited/${fileName}`);
       } else {
-        await saveBlobWithPicker(blob, fileName);
-        setMessage(`Saved ${fileName}`);
+        await target!.write(blob);
+        setMessage(`Saved ${target!.fileName}`);
       }
     } catch (err) {
       if ((err as DOMException)?.name === 'AbortError') return;

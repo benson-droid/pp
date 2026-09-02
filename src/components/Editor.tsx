@@ -5,7 +5,7 @@ import { decodeFull } from '../lib/imageDecode';
 import { loadEditRecipe, saveEditRecipe } from '../lib/sidecar';
 import { ColorRenderer, applyGeometry, renderFull } from '../lib/glPipeline';
 import { canvasToBlob } from '../lib/canvasUtils';
-import { saveBlobWithPicker, writeExportedFile } from '../lib/fileAccess';
+import { JPEG_ACCEPT, beginSave, writeExportedFile } from '../lib/fileAccess';
 import { computeHistogram, type HistogramData } from '../lib/histogram';
 import { copyRecipeToClipboard, hasClipboardRecipe, pasteRecipeOnto } from '../lib/editClipboard';
 import { isDefaultCurve } from '../lib/toneCurve';
@@ -322,20 +322,28 @@ export default function Editor({
   // --- Export --------------------------------------------------------------
 
   async function handleExport() {
+    const baseName = photo.name.replace(/\.[^.]+$/, '');
+    const fileName = `${baseName}.jpg`;
+
+    // In single-file mode the destination has to be reserved here, before
+    // any await: a full-resolution RAW decode can easily outlast the
+    // click's user gesture, and the save picker is only allowed while that
+    // gesture is live.
+    const target = dirHandle ? null : await beginSave(fileName, JPEG_ACCEPT);
+    if (!dirHandle && !target) return; // cancelled
+
     setExporting(true);
     setExportMessage(null);
     try {
       const full = await decodeFull(photo, { halfSize: false });
       const geo = renderFull(full, recipe);
       const blob = await canvasToBlob(geo.canvas, 'image/jpeg', 0.92);
-      const baseName = photo.name.replace(/\.[^.]+$/, '');
-      const fileName = `${baseName}.jpg`;
       if (dirHandle) {
         await writeExportedFile(dirHandle, fileName, blob);
         setExportMessage(`Saved edited/${fileName}`);
       } else {
-        await saveBlobWithPicker(blob, fileName);
-        setExportMessage(`Saved ${fileName}`);
+        await target!.write(blob);
+        setExportMessage(`Saved ${target!.fileName}`);
       }
     } catch (err) {
       if ((err as DOMException)?.name === 'AbortError') {

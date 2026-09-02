@@ -168,7 +168,10 @@ offline with an `OfflineAudioContext` before being encoded as AAC or Opus.
   Chromium builds (notably those without proprietary codecs). The app asks the browser what it
   can actually encode and disables what it can't, falling back to WebM/VP9, which always works.
 - **Export is roughly real-time or slower**, because every frame is a seek-and-draw. A progress
-  bar and a cancel button are provided; long timelines take a while.
+  bar and a cancel button are provided; long timelines take a while, and the Export panel shows
+  the frame count and output size up front so a heavy 4K job isn't a surprise. You're asked where
+  to save *before* the render starts — browsers only allow a save dialog while a click is still
+  "live", so asking afterwards would fail and throw the render away.
 - **Speed changes shift audio pitch**, since they're applied as a playback-rate change rather
   than time-stretching.
 - **One video track.** No picture-in-picture, no compositing between clips beyond transitions.

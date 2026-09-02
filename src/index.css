@@ -1350,3 +1350,9 @@ button.primary:hover:not(:disabled) {
   background: #ff5a5a;
   pointer-events: none;
 }
+
+/* The project/export panel sits beside the clip inspector; it's narrower
+ * because it holds fewer, simpler controls. */
+.project-panel {
+  width: 260px;
+}

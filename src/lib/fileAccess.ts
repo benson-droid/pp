@@ -79,17 +79,104 @@ export async function pickFiles(): Promise<PhotoEntry[]> {
   return photos;
 }
 
+export interface AcceptSpec {
+  description: string;
+  /** MIME type, e.g. "video/mp4". */
+  mime: `${string}/${string}`;
+  /** Extensions including the leading dot, e.g. [".mp4"]. */
+  extensions: `.${string}`[];
+}
+
+export const JPEG_ACCEPT: AcceptSpec = {
+  description: 'JPEG image',
+  mime: 'image/jpeg',
+  extensions: ['.jpg'],
+};
+
+export interface PendingSave {
+  fileName: string;
+  /** Writes the blob to the chosen destination. Safe to call long after
+   * the click that created this target. */
+  write(blob: Blob): Promise<void>;
+}
+
+/** Last-resort save: an object URL and a synthetic anchor click. Unlike
+ * the file picker this needs no user gesture, so it can run after a long
+ * render. */
+function downloadBlob(blob: Blob, fileName: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  // Give the download a moment to start before releasing the URL.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+/**
+ * Reserves a save destination.
+ *
+ * **Call this synchronously from a click handler, BEFORE any await.**
+ * `showSaveFilePicker` is only allowed while a user gesture is still
+ * active, so asking for the location *after* a long export — which is what
+ * this app used to do — fails with "Must be handling a user gesture",
+ * throwing away all that rendering work. Reserving the destination up
+ * front also means the user finds out where the file is going before
+ * waiting for it.
+ *
+ * Returns `null` if the user cancelled the dialog. If the picker isn't
+ * available (or is refused for any other reason) this falls back to a
+ * plain download, which never needs a gesture — so an export can always be
+ * saved somehow.
+ */
+export async function beginSave(
+  suggestedName: string,
+  accept: AcceptSpec = JPEG_ACCEPT,
+): Promise<PendingSave | null> {
+  if (typeof window.showSaveFilePicker === 'function') {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName,
+        types: [{ description: accept.description, accept: { [accept.mime]: accept.extensions } }],
+      });
+      return {
+        fileName: handle.name || suggestedName,
+        async write(blob: Blob) {
+          const writable = await handle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+        },
+      };
+    } catch (err) {
+      // A cancelled dialog is a deliberate choice, not a failure.
+      if ((err as DOMException)?.name === 'AbortError') return null;
+      // Anything else (no permission, unsupported context) falls through
+      // to the download path rather than losing the export.
+      console.warn('Save picker unavailable, falling back to download', err);
+    }
+  }
+
+  return {
+    fileName: suggestedName,
+    async write(blob: Blob) {
+      downloadBlob(blob, suggestedName);
+    },
+  };
+}
+
 /** Used for exporting in single-file mode, where there's no folder handle
- * to write an "edited/" subfolder into — the user is prompted for a save
- * location each time instead. */
-export async function saveBlobWithPicker(blob: Blob, suggestedName: string): Promise<void> {
-  const handle = await window.showSaveFilePicker({
-    suggestedName,
-    types: [{ description: 'JPEG image', accept: { 'image/jpeg': ['.jpg'] } }],
-  });
-  const writable = await handle.createWritable();
-  await writable.write(blob);
-  await writable.close();
+ * to write an "edited/" subfolder into. Prefer `beginSave` when the work
+ * between the click and the write takes more than an instant. */
+export async function saveBlobWithPicker(
+  blob: Blob,
+  suggestedName: string,
+  accept: AcceptSpec = JPEG_ACCEPT,
+): Promise<void> {
+  const target = await beginSave(suggestedName, accept);
+  if (!target) throw new DOMException('Save cancelled', 'AbortError');
+  await target.write(blob);
 }
 
 export async function listPhotos(dirHandle: FileSystemDirectoryHandle): Promise<PhotoEntry[]> {
