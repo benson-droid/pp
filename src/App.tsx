@@ -5,8 +5,12 @@ import FolderPicker from './components/FolderPicker';
 import PhotoGrid from './components/PhotoGrid';
 import Editor from './components/Editor';
 import MergeView from './components/MergeView';
+import VideoEditor from './components/video/VideoEditor';
+
+type Page = 'photos' | 'video';
 
 export default function App() {
+  const [page, setPage] = useState<Page>('photos');
   // dirHandle is null in single-file mode (photos picked individually via
   // "Open Files…", not a whole folder) — see fileAccess.ts / sidecar.ts for
   // how sidecar persistence and export branch on that.
@@ -64,18 +68,52 @@ export default function App() {
     setSessionStarted(false);
   }
 
+  const nav = (
+    <nav className="app-nav">
+      <button className={page === 'photos' ? 'active' : ''} onClick={() => setPage('photos')}>
+        Photos
+      </button>
+      <button className={page === 'video' ? 'active' : ''} onClick={() => setPage('video')}>
+        Video
+      </button>
+    </nav>
+  );
+
+  // The video page owns its own full-height shell, so it sits alongside
+  // the nav rather than inside the photo flow.
+  if (page === 'video') {
+    return (
+      <div className="app-shell">
+        {nav}
+        <VideoEditor />
+      </div>
+    );
+  }
+
   if (!sessionStarted) {
-    return <FolderPicker onPickFolder={handlePickFolder} onPickFiles={handlePickFiles} error={pickError} />;
+    return (
+      <div className="app-shell">
+        {nav}
+        <FolderPicker onPickFolder={handlePickFolder} onPickFiles={handlePickFiles} error={pickError} />
+      </div>
+    );
   }
 
   if (merging.length > 0) {
-    return <MergeView photos={merging} dirHandle={dirHandle} onClose={() => setMerging([])} />;
+    return (
+      <div className="app-shell">
+        {nav}
+        <MergeView photos={merging} dirHandle={dirHandle} onClose={() => setMerging([])} />
+      </div>
+    );
   }
 
   if (selected) {
     const index = photos.findIndex((p) => p.name === selected.name);
     return (
-      <Editor
+      <div className="app-shell">
+        {nav}
+        <Editor
         photo={selected}
         dirHandle={dirHandle}
         position={{ index: Math.max(0, index), total: photos.length }}
@@ -89,18 +127,22 @@ export default function App() {
           setSelected(null);
           refreshPhotos();
         }}
-        onSaved={refreshPhotos}
-      />
+          onSaved={refreshPhotos}
+        />
+      </div>
     );
   }
 
   return (
-    <PhotoGrid
+    <div className="app-shell">
+      {nav}
+      <PhotoGrid
       photos={photos}
       onOpen={setSelected}
       onPickAnotherFolder={handleStartOver}
       folderName={dirHandle ? dirHandle.name : `${photos.length} file${photos.length === 1 ? '' : 's'}`}
-      onMerge={setMerging}
-    />
+        onMerge={setMerging}
+      />
+    </div>
   );
 }

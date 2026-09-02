@@ -1,16 +1,19 @@
-# Photo Editor
+# Photo & Video Editor
 
-A Lightroom-style, nondestructive photo editor that runs entirely in the browser — no server,
-no uploads, no accounts. It reads and writes photos directly on your computer via the
+A Lightroom-style nondestructive photo editor **and a video editor**, both running entirely in
+the browser — no server, no uploads, no accounts. It reads and writes photos directly on your computer via the
 [File System Access API](https://developer.mozilla.org/en-US/docs/Web/API/File_System_Access_API),
 decodes Nikon `.NEF` RAW files client-side with a WebAssembly build of
 [LibRaw](https://github.com/ybouane/LibRaw-Wasm), and applies edits with a WebGL2 shader
 pipeline. Edits are stored in a local, per-browser IndexedDB catalog — the source RAW/JPEG files
 on disk are never modified.
 
+The app has two pages, switched from the nav at the top: **Photos** and **Video**.
+
 ## Status
 
-Early, personal-use MVP. Supports `.NEF` and `.jpg`/`.jpeg` files.
+Early, personal-use MVP. Photos: `.NEF` and `.jpg`/`.jpeg`. Video: anything Chrome can play
+(`.mp4`, `.mov`, `.webm`, `.m4v`).
 
 **Editing:** exposure, contrast, highlights, shadows, whites, blacks, temperature, tint,
 saturation, vibrance; a point tone curve with independent **RGB / R / G / B** channels and the
@@ -127,6 +130,51 @@ between frames (enough for handheld drift), then the same multi-band blending co
   the long edge, your choice) and blocks the UI while it runs. Moving it to a Web Worker and
   raising the ceiling is a worthwhile follow-up.
 
+## Video editing
+
+The **Video** page is a multi-clip timeline editor. It reuses the photo pipeline wholesale: a
+decoded video frame is uploaded as a WebGL texture and run through the *same shader* that grades
+stills, so exposure, tone curves, the HSL mixer, colour grading, grain, vignette, rotation, flip
+and straighten all behave identically on video.
+
+- **Timeline** — import several clips, trim by dragging clip edges, split at the playhead,
+  reorder, and delete. Clip widths are proportional to their timeline duration, so trims and
+  speed changes are visible at a glance.
+- **Speed** — 0.25× to 4×, which changes how long the clip runs.
+- **Per-clip frame rate** — independent of speed. Setting a clip below the project rate holds
+  each source frame for several output frames, giving a stop-motion cadence. Speed changes
+  *length*; frame rate changes *cadence*.
+- **Transitions** — cut, crossfade, fade-to-black, or wipe, with adjustable duration. A
+  transition overlaps its two clips and is automatically clamped so it can't swallow a short one.
+- **Titles** — text with position, size, colour, and fades. Titles are anchored to their clip, so
+  they travel with it when clips are reordered.
+- **Colour grading** — the full photo panel set, per clip.
+- **Audio** — each clip's original audio (with per-clip volume) mixed with an optional music
+  track that has its own volume, offset and fades.
+- **Export** — MP4 (H.264) or WebM (VP9), with a bitrate control and a progress bar you can
+  cancel.
+
+### How it works
+
+Decoding goes through a plain `<video>` element rather than WebCodecs: the element handles every
+container and codec the browser can play, needs no demuxer, and seeks with hardware
+acceleration. Frames are pulled by seeking and drawing to a canvas — measured at roughly 13ms per
+frame. Encoding uses WebCodecs `VideoEncoder` plus `mp4-muxer`/`webm-muxer`, and audio is mixed
+offline with an `OfflineAudioContext` before being encoded as AAC or Opus.
+
+**Known limits, stated plainly:**
+
+- **Export format depends on your browser build.** H.264/MP4 encoding is unavailable in some
+  Chromium builds (notably those without proprietary codecs). The app asks the browser what it
+  can actually encode and disables what it can't, falling back to WebM/VP9, which always works.
+- **Export is roughly real-time or slower**, because every frame is a seek-and-draw. A progress
+  bar and a cancel button are provided; long timelines take a while.
+- **Speed changes shift audio pitch**, since they're applied as a playback-rate change rather
+  than time-stretching.
+- **One video track.** No picture-in-picture, no compositing between clips beyond transitions.
+- **Nothing is saved between sessions yet** — the video timeline lives in memory only, unlike
+  photo edits which persist in the catalog.
+
 ## Project structure
 
 ```
@@ -161,6 +209,17 @@ src/
     ColorWheel.tsx          Hue/sat dial + luminance slider (used by color grading)
     HSLMixer.tsx            8-swatch color mixer panel
     Histogram.tsx           Live RGB histogram canvas
+    video/
+      VideoEditor.tsx        The video page: import, preview, transport, export
+      Timeline.tsx           Clip strip with trim handles and playhead
+      ClipInspector.tsx      Per-clip settings + the photo grading panels
+  video/
+    types.ts              VideoProject, Clip, TitleOverlay, Transition
+    timeline.ts            Timeline math: layout, transitions, frame-rate holds
+    sources.ts             Video loading and the seek/frame-grab pool
+    renderer.ts            Renders one timeline frame through the photo shader
+    audio.ts               Offline audio mixing (clip audio + music)
+    export.ts              WebCodecs encode + MP4/WebM muxing
 ```
 
 ## Deploying to GitHub Pages
