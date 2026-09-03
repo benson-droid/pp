@@ -377,9 +377,13 @@ export default function VideoEditor() {
         shouldCancel: () => cancelRef.current,
       });
       await target.write(result.blob);
-      const mb = (result.blob.size / 1_000_000).toFixed(1);
+      // Small exports read as "0.0 MB" otherwise, which looks like failure.
+      const size =
+        result.blob.size >= 1_000_000
+          ? `${(result.blob.size / 1_000_000).toFixed(1)} MB`
+          : `${Math.max(1, Math.round(result.blob.size / 1000))} KB`;
       setMessage(
-        `Saved ${target.fileName} — ${result.frames} frames, ${result.durationSeconds.toFixed(1)}s, ${mb} MB${result.hasAudio ? ', with audio' : ''}`,
+        `Saved ${target.fileName} — ${result.frames} frames, ${result.durationSeconds.toFixed(1)}s, ${size}${result.hasAudio ? ', with audio' : ''}`,
       );
     } catch (err) {
       if ((err as DOMException)?.name === 'AbortError') {

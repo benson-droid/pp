@@ -26,9 +26,11 @@ export async function loadImageSource(file: File): Promise<VideoSource> {
     bitmap,
     url: '',
     file,
-    // A still has no inherent length; this is the default per-photo hold,
-    // trimmable per clip like anything else.
-    duration: 0.5,
+    // A still has no inherent length, so it must not be clamped like a
+    // video: anything that treats source.duration as a hard limit would
+    // otherwise cap a photo clip at whatever default we picked here. The
+    // real hold lives on the clip's outPoint.
+    duration: 3600,
     width: bitmap.width,
     height: bitmap.height,
     frameRate: 30,

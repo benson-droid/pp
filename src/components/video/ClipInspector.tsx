@@ -41,6 +41,7 @@ export default function ClipInspector({
   onRecipeChange,
 }: ClipInspectorProps) {
   const d = defaultEditRecipe();
+  const isStill = source?.kind === 'image';
   const maxDuration = source?.duration ?? clip.outPoint;
 
   const curves: Record<CurveChannel, EditRecipe['curve']> = {
@@ -65,6 +66,27 @@ export default function ClipInspector({
     <div className="editor-panel">
       <PanelSection title="Clip">
         <div className="inspector-source muted">{source?.name ?? 'Missing source'}</div>
+        {isStill ? (
+          // A still has no in/out point — only how long it's held. Showing
+          // Start/End here also meant the End slider was capped at the
+          // source's nominal duration, which for an image is meaningless.
+          <>
+            <Slider
+              label="Hold"
+              value={Number((clip.outPoint - clip.inPoint).toFixed(2))}
+              min={0.04}
+              max={10}
+              step={0.01}
+              defaultValue={0.5}
+              onChange={(v) => onChange({ inPoint: 0, outPoint: Math.max(0.04, v) })}
+            />
+            <p className="panel-hint muted">
+              Held {clipDuration(clip).toFixed(2)}s
+              {clip.speed !== 1 && ` after the ${clip.speed}× speed`}.
+            </p>
+          </>
+        ) : (
+          <>
         <Slider
           label="Start"
           value={Number(clip.inPoint.toFixed(2))}
@@ -84,6 +106,8 @@ export default function ClipInspector({
           onChange={(v) => onChange({ outPoint: Math.max(v, clip.inPoint + 0.1) })}
         />
         <p className="panel-hint muted">Runs {clipDuration(clip).toFixed(2)}s on the timeline.</p>
+          </>
+        )}
       </PanelSection>
 
       <PanelSection title="Timing" modified={clip.speed !== 1 || clip.frameRate !== null}>
@@ -246,7 +270,7 @@ export default function ClipInspector({
         </button>
       </PanelSection>
 
-      <PanelSection title="Audio" defaultOpen={false} modified={clip.volume !== 100}>
+      <PanelSection title="Audio" defaultOpen={false} modified={clip.volume !== 100 && !isStill}>
         <Slider
           label="Volume"
           value={clip.volume}
