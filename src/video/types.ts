@@ -14,6 +14,11 @@ import type { EditRecipe } from '../types';
 export interface VideoSource {
   id: string;
   name: string;
+  /** Stills are supported as sources so a run of photos can be sequenced
+   * into a stop-motion animation. */
+  kind: 'video' | 'image';
+  /** Decoded bitmap, for image sources only. */
+  bitmap?: ImageBitmap;
   /** Object URL for the underlying file, used by <video> elements. */
   url: string;
   file: File;

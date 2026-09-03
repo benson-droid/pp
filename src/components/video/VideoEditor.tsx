@@ -3,7 +3,7 @@ import type { EditRecipe } from '../../types';
 import { defaultEditRecipe } from '../../types';
 import type { Clip, VideoProject, VideoSource } from '../../video/types';
 import { createClip, emptyProject } from '../../video/types';
-import { VideoPool, loadVideoSource } from '../../video/sources';
+import { VideoPool, loadImageSource, loadVideoSource } from '../../video/sources';
 import { TimelineRenderer } from '../../video/renderer';
 import { frameCount, layoutTimeline, projectDuration } from '../../video/timeline';
 import { type ExportFormat, type FormatSupport, exportTimeline, probeFormats } from '../../video/export';
@@ -35,6 +35,8 @@ export default function VideoEditor() {
   const [formats, setFormats] = useState<FormatSupport[]>([]);
   const [format, setFormat] = useState<ExportFormat>('mp4');
   const [bitrateMbps, setBitrateMbps] = useState(8);
+  /** Seconds each imported photo is held for. */
+  const [photoHold, setPhotoHold] = useState(0.25);
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
   const [exportStage, setExportStage] = useState<string | null>(null);
@@ -191,6 +193,62 @@ export default function VideoEditor() {
     }
   }
 
+  /** Imports stills as a run of short clips — the raw material for a
+   * stop-motion sequence. Each photo becomes its own clip, so they can be
+   * reordered, retimed and graded individually. */
+  async function handleAddPhotos() {
+    setLoadError(null);
+    setBusy(true);
+    try {
+      const handles = await window.showOpenFilePicker({
+        multiple: true,
+        types: [{ description: 'Photos', accept: { 'image/*': ['.jpg', '.jpeg', '.png', '.webp', '.gif'] } }],
+      });
+      const nextSources = new Map(sources);
+      const newClips: Clip[] = [];
+      for (const handle of handles) {
+        const file = await handle.getFile();
+        try {
+          const source = await loadImageSource(file);
+          nextSources.set(source.id, source);
+          const clip = createClip(source.id, source, defaultEditRecipe());
+          clip.outPoint = photoHold;
+          newClips.push(clip);
+        } catch (err) {
+          setLoadError((err as Error).message);
+        }
+      }
+      if (newClips.length > 0) {
+        setSources(nextSources);
+        setProject((p) => {
+          const first = nextSources.get(newClips[0].sourceId)!;
+          const adopt =
+            p.clips.length === 0 ? { width: first.width, height: first.height } : {};
+          return { ...p, ...adopt, clips: [...p.clips, ...newClips] };
+        });
+        setSelectedClipId((id) => id ?? newClips[0].id);
+      }
+    } catch (err) {
+      if ((err as DOMException)?.name !== 'AbortError') setLoadError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Retimes every still on the timeline at once — the main dial for how
+   * fast a stop-motion sequence runs. */
+  function applyPhotoHold(seconds: number) {
+    setPhotoHold(seconds);
+    setProject((p) => ({
+      ...p,
+      clips: p.clips.map((c) =>
+        sources.get(c.sourceId)?.kind === 'image'
+          ? { ...c, inPoint: 0, outPoint: seconds }
+          : c,
+      ),
+    }));
+  }
+
   async function handleAddMusic() {
     try {
       const [handle] = await window.showOpenFilePicker({
@@ -336,6 +394,9 @@ export default function VideoEditor() {
     }
   }
 
+  const photoClipCount = project.clips.filter(
+    (c) => sources.get(c.sourceId)?.kind === 'image',
+  ).length;
   const totalFrames = frameCount(project);
   // Rough heuristic: cost scales with pixels x frames. Past this point the
   // export is minutes rather than seconds, which is worth warning about
@@ -354,6 +415,9 @@ export default function VideoEditor() {
         <div className="editor-header-actions">
           <button onClick={handleAddVideos} disabled={busy || exporting}>
             {busy ? 'Loading…' : 'Add video…'}
+          </button>
+          <button onClick={handleAddPhotos} disabled={busy || exporting} title="Import stills for stop motion">
+            Add photos…
           </button>
           <button onClick={handleAddMusic} disabled={exporting}>
             {project.music ? 'Change music' : 'Add music…'}
@@ -553,6 +617,36 @@ export default function VideoEditor() {
                   }
                 />
                 <button onClick={() => setProject((p) => ({ ...p, music: null }))}>Remove music</button>
+              </PanelSection>
+            )}
+
+            {photoClipCount > 0 && (
+              <PanelSection title="Stop motion">
+                <p className="panel-hint muted">
+                  {photoClipCount} photo{photoClipCount === 1 ? '' : 's'} on the timeline.
+                </p>
+                <div className="panel-subhead">Hold per photo</div>
+                <div className="preset-row">
+                  {[
+                    { label: '2/s', v: 0.5 },
+                    { label: '4/s', v: 0.25 },
+                    { label: '8/s', v: 0.125 },
+                    { label: '12/s', v: 1 / 12 },
+                    { label: '24/s', v: 1 / 24 },
+                  ].map((o) => (
+                    <button
+                      key={o.label}
+                      className={Math.abs(photoHold - o.v) < 1e-4 ? 'active' : ''}
+                      onClick={() => applyPhotoHold(o.v)}
+                    >
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="panel-hint muted">
+                  Each photo is held {photoHold.toFixed(3)}s, so the sequence runs at about{' '}
+                  {Math.round(1 / photoHold)} photos per second.
+                </p>
               </PanelSection>
             )}
 

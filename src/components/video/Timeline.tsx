@@ -39,6 +39,7 @@ export default function Timeline({
   const dragRef = useRef<{ clipId: string; edge: 'in' | 'out'; startX: number; pxPerSecond: number } | null>(
     null,
   );
+  const scrubbingRef = useRef(false);
 
   const total = projectDuration(project);
   const placements = layoutTimeline(project);
@@ -49,12 +50,35 @@ export default function Timeline({
     return el.clientWidth / total;
   }
 
-  function handleRulerClick(e: React.MouseEvent<HTMLDivElement>) {
+  function scrubToClientX(clientX: number) {
     const el = trackRef.current;
     if (!el || total <= 0) return;
     const rect = el.getBoundingClientRect();
-    const fraction = (e.clientX - rect.left) / rect.width;
+    const fraction = (clientX - rect.left) / rect.width;
     onScrub(Math.max(0, Math.min(1, fraction)) * total);
+  }
+
+  function handleRulerClick(e: React.MouseEvent<HTMLDivElement>) {
+    scrubToClientX(e.clientX);
+  }
+
+  /** Press-and-drag scrubbing: the playhead follows the pointer for the
+   * whole gesture rather than jumping once per click. */
+  function startScrub(e: React.PointerEvent<HTMLDivElement>) {
+    scrubbingRef.current = true;
+    scrubToClientX(e.clientX);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+
+  function moveScrub(e: React.PointerEvent<HTMLDivElement>) {
+    if (!scrubbingRef.current) return;
+    scrubToClientX(e.clientX);
+  }
+
+  function endScrub(e: React.PointerEvent<HTMLDivElement>) {
+    if (!scrubbingRef.current) return;
+    scrubbingRef.current = false;
+    e.currentTarget.releasePointerCapture(e.pointerId);
   }
 
   function startTrim(e: React.PointerEvent, clipId: string, edge: 'in' | 'out') {
@@ -88,14 +112,22 @@ export default function Timeline({
         <span className="timeline-time">{formatTime(playhead)}</span>
         <span className="muted"> / {formatTime(total)}</span>
         <span className="muted timeline-hint">
-          Click the bar to scrub · drag a clip edge to trim
+          Drag the bar to scrub · drag a clip edge to trim
         </span>
       </div>
 
       {/* A dedicated ruler strip. Clips fill the track below it, and a clip
           click selects that clip — so without this there would be nowhere
           left to click to move the playhead once the timeline is full. */}
-      <div className="timeline-ruler" onClick={handleRulerClick} title="Click to move the playhead">
+      <div
+        className="timeline-ruler"
+        onClick={handleRulerClick}
+        onPointerDown={startScrub}
+        onPointerMove={moveScrub}
+        onPointerUp={endScrub}
+        onPointerCancel={endScrub}
+        title="Drag to scrub"
+      >
         {total > 0 && <div className="timeline-ruler-head" style={{ left: `${(playhead / total) * 100}%` }} />}
       </div>
 

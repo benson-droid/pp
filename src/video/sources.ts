@@ -14,6 +14,28 @@ import type { VideoSource } from './types';
 const SEEK_TIMEOUT_MS = 8000;
 
 /** Reads metadata for a picked file and turns it into a VideoSource. */
+/** Loads a still image as a source. Stop-motion works by putting a run of
+ * these on the timeline at a short duration each — the project frame rate
+ * then decides the cadence. */
+export async function loadImageSource(file: File): Promise<VideoSource> {
+  const bitmap = await createImageBitmap(file);
+  return {
+    id: `src-${Math.random().toString(36).slice(2, 10)}`,
+    name: file.name,
+    kind: 'image',
+    bitmap,
+    url: '',
+    file,
+    // A still has no inherent length; this is the default per-photo hold,
+    // trimmable per clip like anything else.
+    duration: 0.5,
+    width: bitmap.width,
+    height: bitmap.height,
+    frameRate: 30,
+    hasAudio: false,
+  };
+}
+
 export async function loadVideoSource(file: File): Promise<VideoSource> {
   const url = URL.createObjectURL(file);
   const video = document.createElement('video');
@@ -42,6 +64,7 @@ export async function loadVideoSource(file: File): Promise<VideoSource> {
   return {
     id: `src-${Math.random().toString(36).slice(2, 10)}`,
     name: file.name,
+    kind: 'video',
     url,
     file,
     duration: Number.isFinite(video.duration) ? video.duration : 0,
@@ -131,8 +154,10 @@ export class VideoPool {
     return video;
   }
 
-  /** Seeks to `time` and resolves once that frame is actually presentable. */
-  async seek(source: VideoSource, time: number): Promise<HTMLVideoElement> {
+  /** Resolves to something drawable for this source at `time`. Images
+   * ignore the timestamp entirely; videos seek. */
+  async seek(source: VideoSource, time: number): Promise<CanvasImageSource | null> {
+    if (source.kind === 'image') return source.bitmap ?? null;
     const video = this.get(source);
     if (video.readyState < 1) {
       await new Promise<void>((resolve, reject) => {
@@ -150,7 +175,9 @@ export class VideoPool {
 
     const target = Math.max(0, Math.min(time, Math.max(0, source.duration - 1e-3)));
     // Already close enough — a redundant seek costs a frame's worth of time.
-    if (Math.abs(video.currentTime - target) < 1e-3 && video.readyState >= 2) return video;
+    // The tolerance is a frame at 60fps rather than a millisecond, which is
+    // what keeps playback from queueing a seek it can never finish in time.
+    if (Math.abs(video.currentTime - target) < 0.016 && video.readyState >= 2) return video;
 
     await new Promise<void>((resolve) => {
       let settled = false;

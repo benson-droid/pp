@@ -77,28 +77,33 @@ export class TimelineRenderer {
   /** Reused buffer for pulling pixels out of the video element. */
   private grab = new OffscreenCanvas(16, 16);
   private grabCtx: OffscreenCanvasRenderingContext2D;
+  /** Back buffer: frames are composed here and blitted only on success. */
+  private back = new OffscreenCanvas(16, 16);
+  private backCtx: OffscreenCanvasRenderingContext2D;
 
   constructor() {
     const gctx = this.grab.getContext('2d');
-    if (!gctx) throw new Error('Could not get a 2D context');
+    const bctx = this.back.getContext('2d');
+    if (!gctx || !bctx) throw new Error('Could not get a 2D context');
     this.grabCtx = gctx;
+    this.backCtx = bctx;
   }
 
   /** Pulls the current frame out of a video element and runs it through
    * the photo pipeline, returning a canvas with the graded result. */
   private gradeFrame(
-    video: HTMLVideoElement,
+    frame: CanvasImageSource,
+    vw: number,
+    vh: number,
     clipRecipe: import('../types').EditRecipe,
   ): { canvas: OffscreenCanvas; width: number; height: number } | null {
-    const vw = video.videoWidth;
-    const vh = video.videoHeight;
     if (vw === 0 || vh === 0) return null;
 
     if (this.grab.width !== vw || this.grab.height !== vh) {
       this.grab.width = vw;
       this.grab.height = vh;
     }
-    this.grabCtx.drawImage(video, 0, 0, vw, vh);
+    this.grabCtx.drawImage(frame, 0, 0, vw, vh);
     const imageData = this.grabCtx.getImageData(0, 0, vw, vh);
 
     const decoded: DecodedImage = {
@@ -126,18 +131,24 @@ export class TimelineRenderer {
     time: number,
     target: HTMLCanvasElement | OffscreenCanvas,
   ): Promise<boolean> {
-    const ctx = (target as HTMLCanvasElement).getContext('2d') as
+    const present = (target as HTMLCanvasElement).getContext('2d') as
       | CanvasRenderingContext2D
       | OffscreenCanvasRenderingContext2D
       | null;
-    if (!ctx) return false;
+    if (!present) return false;
 
     const w = project.width;
     const h = project.height;
-    if (target.width !== w || target.height !== h) {
-      target.width = w;
-      target.height = h;
+
+    // Compose into a back buffer, and only blit to the visible canvas once
+    // something was actually drawn. Clearing the target up front is what
+    // made playback flash black: a seek that hadn't produced a frame yet
+    // left the viewer staring at the cleared canvas.
+    if (this.back.width !== w || this.back.height !== h) {
+      this.back.width = w;
+      this.back.height = h;
     }
+    const ctx = this.backCtx;
 
     ctx.save();
     ctx.fillStyle = '#000';
@@ -148,15 +159,20 @@ export class TimelineRenderer {
       ctx.restore();
       return false;
     }
+    let drewSomething = false;
 
     for (let i = 0; i < composition.layers.length; i++) {
       const layer = composition.layers[i];
       const source = sources.get(layer.placement.clip.sourceId);
       if (!source) continue;
 
-      const video = await pool.seek(source, layer.sourceTime);
-      const graded = this.gradeFrame(video, layer.placement.clip.recipe);
+      const frame = await pool.seek(source, layer.sourceTime);
+      if (!frame) continue;
+      const fw = source.kind === 'image' ? source.width : (frame as HTMLVideoElement).videoWidth;
+      const fh = source.kind === 'image' ? source.height : (frame as HTMLVideoElement).videoHeight;
+      const graded = this.gradeFrame(frame, fw, fh, layer.placement.clip.recipe);
       if (!graded) continue;
+      drewSomething = true;
 
       ctx.save();
       ctx.globalAlpha = layer.opacity;
@@ -185,6 +201,17 @@ export class TimelineRenderer {
     }
 
     ctx.restore();
+
+    // Nothing decoded this time — leave the last good frame on screen
+    // rather than flashing black.
+    if (!drewSomething) return false;
+
+    if (target.width !== w || target.height !== h) {
+      target.width = w;
+      target.height = h;
+    }
+    present.clearRect(0, 0, w, h);
+    present.drawImage(this.back, 0, 0);
     return true;
   }
 }
