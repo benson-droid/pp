@@ -19,6 +19,7 @@
  * is expected as this evolves.
  */
 import type { DecodedImage, EditRecipe, HSLChannelName } from '../types';
+import { matrixToGL, whiteBalanceMatrix } from './whiteBalance';
 import { HSL_CHANNEL_NAMES } from '../types';
 import { buildChannelLUTs } from './toneCurve';
 
@@ -47,8 +48,7 @@ uniform float uHighlights;
 uniform float uShadows;
 uniform float uWhites;
 uniform float uBlacks;
-uniform float uTemperature;
-uniform float uTint;
+uniform mat3 uWhiteBalance;    // linear-sRGB chromatic adaptation, identity when neutral
 uniform float uSaturation;
 uniform float uVibrance;
 
@@ -258,6 +258,16 @@ vec3 applyVignette(vec3 color, vec2 outUV) {
 // midtones and highlights, weighted by luminance. uGradeBlending widens
 // the transition between ranges; uGradeBalance shifts where shadows end
 // and highlights begin.
+// sRGB transfer function, both directions. Used by the white balance step,
+// which is only correct in linear light.
+vec3 srgbToLinear(vec3 c) {
+  return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
+}
+
+vec3 linearToSrgb(vec3 c) {
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
+}
+
 vec3 applyColorGrade(vec3 color) {
   float lum = dot(color, vec3(0.299, 0.587, 0.114));
   float blend = mix(0.12, 0.45, uGradeBlending / 100.0);
@@ -294,18 +304,20 @@ void main() {
 
   vec3 color = mix(rawColor, rawBlurred, clamp(uNoiseReduction / 100.0, 0.0, 1.0) * 0.85);
 
+  // White balance, before anything else touches the pixel — it describes
+  // the light the picture was taken under, not a look applied afterwards.
+  //
+  // The multiply happens in LINEAR light and the result is re-encoded. A
+  // 3x3 applied straight to gamma-encoded values is a different transform
+  // that skews the shadows, which is what makes cheap white balance look
+  // muddy at the bottom of the tone range.
+  color = srgbToLinear(max(color, 0.0));
+  color = uWhiteBalance * color;
+  color = linearToSrgb(max(color, 0.0));
+
   // Exposure: stops -> linear multiplier.
   color *= pow(2.0, uExposure);
 
-  // White balance: simple per-channel gains (relative to the camera WB
-  // LibRaw already applied at decode time).
-  float temp = uTemperature / 100.0;
-  float tint = uTint / 100.0;
-  color.r *= 1.0 + temp * 0.3;
-  color.b *= 1.0 - temp * 0.3;
-  color.g *= 1.0 + tint * 0.15;
-  color.r *= 1.0 - tint * 0.05;
-  color.b *= 1.0 - tint * 0.05;
 
   // Highlights / shadows: additive, weighted by a luminance mask.
   float lum = dot(color, vec3(0.299, 0.587, 0.114));
@@ -410,8 +422,7 @@ interface Uniforms {
   uShadows: WebGLUniformLocation;
   uWhites: WebGLUniformLocation;
   uBlacks: WebGLUniformLocation;
-  uTemperature: WebGLUniformLocation;
-  uTint: WebGLUniformLocation;
+  uWhiteBalance: WebGLUniformLocation;
   uSaturation: WebGLUniformLocation;
   uVibrance: WebGLUniformLocation;
   uNoiseReduction: WebGLUniformLocation;
@@ -520,8 +531,7 @@ export class ColorRenderer {
       uShadows: getLoc('uShadows'),
       uWhites: getLoc('uWhites'),
       uBlacks: getLoc('uBlacks'),
-      uTemperature: getLoc('uTemperature'),
-      uTint: getLoc('uTint'),
+      uWhiteBalance: getLoc('uWhiteBalance'),
       uSaturation: getLoc('uSaturation'),
       uVibrance: getLoc('uVibrance'),
       uNoiseReduction: getLoc('uNoiseReduction'),
@@ -593,8 +603,11 @@ export class ColorRenderer {
     gl.uniform1f(this.uniforms.uShadows, recipe.shadows);
     gl.uniform1f(this.uniforms.uWhites, recipe.whites);
     gl.uniform1f(this.uniforms.uBlacks, recipe.blacks);
-    gl.uniform1f(this.uniforms.uTemperature, recipe.temperature);
-    gl.uniform1f(this.uniforms.uTint, recipe.tint);
+    gl.uniformMatrix3fv(
+      this.uniforms.uWhiteBalance,
+      false,
+      matrixToGL(whiteBalanceMatrix(recipe.temperature, recipe.tint)),
+    );
     gl.uniform1f(this.uniforms.uSaturation, recipe.saturation);
     gl.uniform1f(this.uniforms.uVibrance, recipe.vibrance);
 

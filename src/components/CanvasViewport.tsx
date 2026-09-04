@@ -32,6 +32,10 @@ interface CanvasViewportProps {
   /** Zoom is a multiplier on top of fit-to-window; 1 means "fit". */
   zoom: number;
   onZoomChange: (zoom: number, focus?: { x: number; y: number }) => void;
+  /** Eyedropper mode: the next click reports where it landed instead of
+   * panning. */
+  pickMode?: boolean;
+  onPick?: (u: number, v: number) => void;
   children: React.ReactNode;
 }
 
@@ -92,6 +96,8 @@ function clampRect(rect: CropRect): CropRect {
  * handles, a rule-of-thirds grid, and dimmed surroundings.
  */
 export default function CanvasViewport({
+  pickMode = false,
+  onPick,
   width,
   height,
   cropMode,
@@ -289,8 +295,22 @@ export default function CanvasViewport({
   return (
     <div
       ref={containerRef}
-      className={`viewport${cropMode ? ' cropping' : ''}${!cropMode && zoom > 1 ? ' pannable' : ''}`}
+      className={`viewport${cropMode ? ' cropping' : ''}${pickMode ? ' picking' : ''}${!cropMode && !pickMode && zoom > 1 ? ' pannable' : ''}`}
       onWheel={onWheel}
+      onClick={(e) => {
+        if (!pickMode || !onPick) return;
+        // Report in the *image's* own coordinates, not the container's —
+        // the image is letterboxed inside the viewport and may be zoomed
+        // and panned, so the two are rarely the same rectangle.
+        const img = e.currentTarget.querySelector('.viewport-image');
+        if (!img) return;
+        const r = img.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return;
+        const u = (e.clientX - r.left) / r.width;
+        const v = (e.clientY - r.top) / r.height;
+        if (u < 0 || v < 0 || u > 1 || v > 1) return;
+        onPick(u, v);
+      }}
       onPointerDown={onPanPointerDown}
       onPointerMove={onPanPointerMove}
       onPointerUp={onPanPointerUp}

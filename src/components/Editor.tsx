@@ -6,6 +6,12 @@ import { loadEditRecipe, saveEditRecipe } from '../lib/sidecar';
 import { ColorRenderer, applyGeometry, renderFull } from '../lib/glPipeline';
 import { canvasToBlob } from '../lib/canvasUtils';
 import { writeExportedFile } from '../lib/fileAccess';
+import { useHistory, useUndoShortcuts } from '../lib/useHistory';
+import { PRESETS, type Preset, applyPreset, presetMatches } from '../lib/presets';
+import { kelvinTintFromRGB, NEUTRAL_KELVIN } from '../lib/whiteBalance';
+import PresetPicker from './PresetPicker';
+import WhiteBalancePanel from './WhiteBalancePanel';
+import ColorGradePanel from './ColorGradePanel';
 import { useOutputFolder } from '../lib/useOutputFolder';
 import OutputFolderPanel from './OutputFolderPanel';
 import { computeHistogram, type HistogramData } from '../lib/histogram';
@@ -13,7 +19,6 @@ import { copyRecipeToClipboard, hasClipboardRecipe, pasteRecipeOnto } from '../l
 import { isDefaultCurve } from '../lib/toneCurve';
 import Slider from './Slider';
 import ToneCurve, { type CurveChannel } from './ToneCurve';
-import ColorWheel from './ColorWheel';
 import HSLMixerPanel from './HSLMixer';
 import Histogram from './Histogram';
 import PanelSection from './PanelSection';
@@ -57,7 +62,12 @@ export default function Editor({
   onNavigate,
 }: EditorProps) {
   const [decoded, setDecoded] = useState<DecodedImage | null>(null);
-  const [recipe, setRecipe] = useState<EditRecipe>(defaultEditRecipe());
+  // Undo history rather than plain state. `history.set` is a drop-in for a
+  // setState setter; the optional label is what turns a slider drag into
+  // one undo step instead of a hundred.
+  const history = useHistory<EditRecipe>(defaultEditRecipe());
+  const recipe = history.value;
+  const setRecipe = history.set;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -65,6 +75,9 @@ export default function Editor({
   const [exportMessage, setExportMessage] = useState<string | null>(null);
   const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
   const [cropMode, setCropMode] = useState(false);
+  /** Grey-point eyedropper: the next click on the photo sets the white
+   * balance from whatever was clicked. */
+  const [pickingGrey, setPickingGrey] = useState(false);
   const [showOriginal, setShowOriginal] = useState(false);
   const [histogram, setHistogram] = useState<HistogramData | null>(null);
   const [zoom, setZoom] = useState(1);
@@ -89,7 +102,7 @@ export default function Editor({
       .then(([img, loadedRecipe]) => {
         if (cancelled) return;
         setDecoded(img);
-        setRecipe(loadedRecipe);
+        history.reset(loadedRecipe);
         recipeLoadedRef.current = true;
       })
       .catch((err) => {
@@ -228,8 +241,10 @@ export default function Editor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recipe]);
 
-  function updateRecipe(patch: Partial<EditRecipe>) {
-    setRecipe((r) => ({ ...r, ...patch }));
+  /** `label` groups a rapid run of changes into one undo step. Slider
+   * components pass their own name. */
+  function updateRecipe(patch: Partial<EditRecipe>, label?: string) {
+    setRecipe((r) => ({ ...r, ...patch }), label ?? Object.keys(patch).join(','));
   }
 
   function resetAll() {
@@ -253,6 +268,52 @@ export default function Editor({
     setRecipe((r) => ({ ...r, rotation: ((r.rotation + dir + 4) % 4) as 0 | 1 | 2 | 3 }));
   }
 
+  function handleApplyPreset(preset: Preset) {
+    setRecipe((r) => {
+      const next = applyPreset(r, preset);
+      return next;
+    }, `preset-${preset.id}`);
+    flashMessage(`Applied ${preset.name}`);
+  }
+
+  /**
+   * Sets the white balance from a pixel the photographer says is neutral.
+   *
+   * The sample has to come from the image *before* the current white
+   * balance is applied, otherwise clicking the same grey twice would keep
+   * moving — each reading would be relative to the last correction rather
+   * than to the photograph. So this reads from the decoded pixels, not the
+   * rendered canvas.
+   */
+  function handlePickGrey(u: number, v: number) {
+    setPickingGrey(false);
+    if (!decoded) return;
+    const px = Math.round(u * (decoded.width - 1));
+    const py = Math.round(v * (decoded.height - 1));
+    if (px < 0 || py < 0 || px >= decoded.width || py >= decoded.height) return;
+
+    // Average a small patch: a single pixel is noise, and on a RAW file it
+    // may sit under a demosaic artefact.
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    let n = 0;
+    const R = 3;
+    for (let y = Math.max(0, py - R); y <= Math.min(decoded.height - 1, py + R); y++) {
+      for (let x = Math.max(0, px - R); x <= Math.min(decoded.width - 1, px + R); x++) {
+        const i = (y * decoded.width + x) * 4;
+        r += decoded.rgba[i];
+        g += decoded.rgba[i + 1];
+        b += decoded.rgba[i + 2];
+        n++;
+      }
+    }
+    if (n === 0) return;
+    const { kelvin, tint } = kelvinTintFromRGB(r / n / 255, g / n / 255, b / n / 255);
+    updateRecipe({ temperature: kelvin, tint }, 'wb-pick');
+    flashMessage(`White balance set to ${kelvin} K`);
+  }
+
   function handleCopySettings() {
     copyRecipeToClipboard(recipe);
     flashMessage('Copied edit settings');
@@ -273,6 +334,8 @@ export default function Editor({
     window.setTimeout(() => setSettingsMessage(null), 2000);
   }
 
+
+  useUndoShortcuts(history.undo, history.redo);
   // --- Crop ----------------------------------------------------------------
 
   function enterCropMode() {
@@ -388,8 +451,9 @@ export default function Editor({
     recipe.shadows !== 0 ||
     recipe.whites !== 0 ||
     recipe.blacks !== 0;
-  const colorModified =
-    recipe.temperature !== 0 || recipe.tint !== 0 || recipe.saturation !== 0 || recipe.vibrance !== 0;
+  const wbModified = recipe.temperature !== NEUTRAL_KELVIN || recipe.tint !== 0;
+  const colorModified = recipe.saturation !== 0 || recipe.vibrance !== 0;
+  const activePresetId = PRESETS.find((p) => p.id !== 'none' && presetMatches(recipe, p))?.id ?? null;
   const curveModified = !(
     isDefaultCurve(recipe.curve) &&
     isDefaultCurve(recipe.curveR) &&
@@ -455,6 +519,22 @@ export default function Editor({
             Paste
           </button>
           <button
+            onClick={history.undo}
+            disabled={!history.canUndo}
+            title="Undo (Ctrl/Cmd+Z)"
+            aria-label="Undo"
+          >
+            ↶
+          </button>
+          <button
+            onClick={history.redo}
+            disabled={!history.canRedo}
+            title="Redo (Ctrl/Cmd+Shift+Z)"
+            aria-label="Redo"
+          >
+            ↷
+          </button>
+          <button
             className={showOriginal ? 'active' : ''}
             onMouseDown={() => setShowOriginal(true)}
             onMouseUp={() => setShowOriginal(false)}
@@ -486,6 +566,8 @@ export default function Editor({
               showOriginal={showOriginal}
               zoom={zoom}
               onZoomChange={setZoom}
+              pickMode={pickingGrey}
+              onPick={handlePickGrey}
             >
               <canvas ref={canvasRef} />
             </CanvasViewport>
@@ -581,6 +663,10 @@ export default function Editor({
             )}
           </PanelSection>
 
+          <PanelSection title="Presets" defaultOpen={false}>
+            <PresetPicker activeId={activePresetId} onApply={handleApplyPreset} />
+          </PanelSection>
+
           <PanelSection title="Light" modified={lightModified}>
             <Slider
               label="Exposure"
@@ -631,21 +717,17 @@ export default function Editor({
             <ToneCurve curves={curves} onChange={setCurve} histogram={histogram} />
           </PanelSection>
 
+          <PanelSection title="White Balance" modified={wbModified}>
+            <WhiteBalancePanel
+              kelvin={recipe.temperature}
+              tint={recipe.tint}
+              onChange={updateRecipe}
+              picking={pickingGrey}
+              onTogglePicking={() => setPickingGrey((v) => !v)}
+            />
+          </PanelSection>
+
           <PanelSection title="Color" modified={colorModified}>
-            <Slider
-              label="Temperature"
-              value={recipe.temperature}
-              min={-100}
-              max={100}
-              onChange={(v) => updateRecipe({ temperature: v })}
-            />
-            <Slider
-              label="Tint"
-              value={recipe.tint}
-              min={-100}
-              max={100}
-              onChange={(v) => updateRecipe({ tint: v })}
-            />
             <Slider
               label="Saturation"
               value={recipe.saturation}
@@ -667,37 +749,13 @@ export default function Editor({
           </PanelSection>
 
           <PanelSection title="Color Grading" defaultOpen={false} modified={gradeModified}>
-            <div className="color-wheel-row">
-              <ColorWheel
-                label="Shadows"
-                value={recipe.gradeShadows}
-                onChange={(gradeShadows) => updateRecipe({ gradeShadows })}
-              />
-              <ColorWheel
-                label="Midtones"
-                value={recipe.gradeMidtones}
-                onChange={(gradeMidtones) => updateRecipe({ gradeMidtones })}
-              />
-              <ColorWheel
-                label="Highlights"
-                value={recipe.gradeHighlights}
-                onChange={(gradeHighlights) => updateRecipe({ gradeHighlights })}
-              />
-            </div>
-            <Slider
-              label="Blending"
-              value={recipe.gradeBlending}
-              min={0}
-              max={100}
-              defaultValue={d.gradeBlending}
-              onChange={(v) => updateRecipe({ gradeBlending: v })}
-            />
-            <Slider
-              label="Balance"
-              value={recipe.gradeBalance}
-              min={-100}
-              max={100}
-              onChange={(v) => updateRecipe({ gradeBalance: v })}
+            <ColorGradePanel
+              shadows={recipe.gradeShadows}
+              midtones={recipe.gradeMidtones}
+              highlights={recipe.gradeHighlights}
+              blending={recipe.gradeBlending}
+              balance={recipe.gradeBalance}
+              onChange={updateRecipe}
             />
           </PanelSection>
 

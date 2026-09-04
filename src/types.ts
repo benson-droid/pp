@@ -1,6 +1,7 @@
 /**
  * Core data types shared across the app.
  */
+import { NEUTRAL_KELVIN } from './lib/whiteBalance';
 
 /** One control point on the tone curve, in normalized 0..1 input/output
  * space (x = input tone, y = output tone). */
@@ -58,7 +59,7 @@ function defaultHSLMixer(): HSLMixer {
  * a Lightroom XMP sidecar: the original file is never modified, only this
  * small JSON is written/read next to it. */
 export interface EditRecipe {
-  version: 1;
+  version: 2;
 
   exposure: number; // stops, roughly -5..5
   contrast: number; // -100..100
@@ -66,8 +67,15 @@ export interface EditRecipe {
   shadows: number; // -100..100
   whites: number; // -100..100
   blacks: number; // -100..100
-  temperature: number; // -100..100, relative warm/cool shift
-  tint: number; // -100..100, relative green/magenta shift
+  /** White balance in Kelvin (2000..20000). This is the illuminant you're
+   * declaring the scene was lit by, so *raising* it warms the picture —
+   * the same direction Lightroom's slider runs. 6500 is neutral, since
+   * that's the white sRGB itself is defined at. See lib/whiteBalance.ts. */
+  temperature: number;
+  /** Green/magenta, -150..150. Positive is magenta. Moves perpendicular to
+   * the colour-temperature locus, which is the axis fluorescent and LED
+   * lighting actually strays along. */
+  tint: number;
   saturation: number; // -100..100
   vibrance: number; // -100..100
 
@@ -159,14 +167,14 @@ function identityCurve(): CurvePoint[] {
 
 export function defaultEditRecipe(): EditRecipe {
   return {
-    version: 1,
+    version: 2,
     exposure: 0,
     contrast: 0,
     highlights: 0,
     shadows: 0,
     whites: 0,
     blacks: 0,
-    temperature: 0,
+    temperature: NEUTRAL_KELVIN,
     tint: 0,
     saturation: 0,
     vibrance: 0,

@@ -5,13 +5,40 @@ import { defaultEditRecipe } from '../types';
 import { readSidecarText } from './fileAccess';
 import { deleteCatalogRecipe, getCatalogRecipe, photoKey, setCatalogRecipe } from './catalog';
 import { isDefaultCurve, sanitizeCurve } from './toneCurve';
+import { MAX_KELVIN, MAX_TINT, MIN_KELVIN, NEUTRAL_KELVIN } from './whiteBalance';
 
-function mergeOntoDefaults(parsed: Partial<EditRecipe>): EditRecipe {
+/**
+ * Version 1 stored white balance as two ±100 "shift" sliders. Version 2
+ * stores a real colour temperature in Kelvin. An old recipe read as-is
+ * would be interpreted as a 0K white balance, which is not a subtle wrong
+ * — so the old numbers are mapped onto the new scale here. ±100 spanned
+ * roughly tungsten to deep shade in practice, so that's what it maps to.
+ */
+function clamp(v: number, lo: number, hi: number): number {
+  return Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : lo;
+}
+
+function migrate(parsed: Partial<EditRecipe>): Partial<EditRecipe> {
+  if ((parsed.version ?? 1) >= 2) return parsed;
+  const oldTemp = typeof parsed.temperature === 'number' ? parsed.temperature : 0;
+  const oldTint = typeof parsed.tint === 'number' ? parsed.tint : 0;
+  return {
+    ...parsed,
+    version: 2,
+    temperature: Math.round(
+      oldTemp >= 0 ? NEUTRAL_KELVIN + oldTemp * 60 : NEUTRAL_KELVIN + oldTemp * 40,
+    ),
+    tint: Math.round(oldTint * 1.5),
+  };
+}
+
+function mergeOntoDefaults(raw: Partial<EditRecipe>): EditRecipe {
+  const parsed = migrate(raw);
   const d = defaultEditRecipe();
   return {
     ...d,
     ...parsed,
-    version: 1,
+    version: 2,
     curve: sanitizeCurve(parsed.curve),
     curveR: sanitizeCurve(parsed.curveR),
     curveG: sanitizeCurve(parsed.curveG),
@@ -20,6 +47,8 @@ function mergeOntoDefaults(parsed: Partial<EditRecipe>): EditRecipe {
     gradeShadows: { ...d.gradeShadows, ...parsed.gradeShadows },
     gradeMidtones: { ...d.gradeMidtones, ...parsed.gradeMidtones },
     gradeHighlights: { ...d.gradeHighlights, ...parsed.gradeHighlights },
+    temperature: clamp(parsed.temperature ?? NEUTRAL_KELVIN, MIN_KELVIN, MAX_KELVIN),
+    tint: clamp(parsed.tint ?? 0, -MAX_TINT, MAX_TINT),
   };
 }
 

@@ -10,6 +10,9 @@ import { type ExportFormat, type FormatSupport, exportTimeline, probeFormats } f
 import { type DroppedContents, isAudioFile, isImageFile, isVideoFile } from '../../lib/dropzone';
 import DropZone from '../DropZone';
 import { useOutputFolder } from '../../lib/useOutputFolder';
+import { useHistory, useUndoShortcuts } from '../../lib/useHistory';
+import { PRESETS, type Preset, applyPreset, noFilmEffects } from '../../lib/presets';
+import PresetPicker from '../PresetPicker';
 import { clearVideoProject, loadVideoProject, saveVideoProject } from '../../lib/session';
 import OutputFolderPanel from '../OutputFolderPanel';
 import Timeline from './Timeline';
@@ -28,7 +31,12 @@ const RESOLUTIONS = [
  * with the photo tools, add titles and transitions, and export the result.
  */
 export default function VideoEditor() {
-  const [project, setProject] = useState<VideoProject>(emptyProject());
+  // The whole project is the undo unit: a trim, a reorder, a grade and a
+  // title edit are all just "the project changed", so one history covers
+  // every one of them without each feature needing its own.
+  const projectHistory = useHistory<VideoProject>(emptyProject());
+  const project = projectHistory.value;
+  const setProject = projectHistory.set;
   const [sources, setSources] = useState<Map<string, VideoSource>>(new Map());
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [playhead, setPlayhead] = useState(0);
@@ -61,6 +69,8 @@ export default function VideoEditor() {
   const rendererRef = useRef<TimelineRenderer | null>(null);
   const cancelRef = useRef(false);
   const renderingRef = useRef(false);
+
+  useUndoShortcuts(projectHistory.undo, projectHistory.redo, !exporting);
 
   const duration = projectDuration(project);
   const selectedClip = project.clips.find((c) => c.id === selectedClipId) ?? null;
@@ -98,7 +108,7 @@ export default function VideoEditor() {
     const clips = restored.project.clips.filter((c) => nextSources.has(c.sourceId));
     if (clips.length === 0) return false;
     setSources(nextSources);
-    setProject({ ...restored.project, clips });
+    projectHistory.reset({ ...restored.project, clips });
     setSelectedClipId(clips[0].id);
     setResumable(null);
     if (restored.missing.length > 0) {
@@ -426,11 +436,35 @@ export default function VideoEditor() {
     }
   }
 
-  function updateClip(clipId: string, patch: Partial<Clip>) {
+  function updateClip(clipId: string, patch: Partial<Clip>, label?: string) {
+    setProject(
+      (p) => ({
+        ...p,
+        clips: p.clips.map((c) => (c.id === clipId ? { ...c, ...patch } : c)),
+      }),
+      // Scoped to the clip as well as the field, so dragging the same
+      // slider on two different clips is two undo steps rather than one.
+      label ? `${clipId}:${label}` : undefined,
+    );
+  }
+
+  function handleApplyPreset(preset: Preset, toAll: boolean) {
     setProject((p) => ({
       ...p,
-      clips: p.clips.map((c) => (c.id === clipId ? { ...c, ...patch } : c)),
+      clips: p.clips.map((c) => {
+        if (!toAll && c.id !== selectedClipId) return c;
+        return {
+          ...c,
+          recipe: applyPreset(c.recipe, preset),
+          frameRate: preset.video?.frameRate ?? null,
+          film: preset.video?.film ? { ...preset.video.film } : noFilmEffects(),
+          presetId: preset.id === 'none' ? null : preset.id,
+        };
+      }),
     }));
+    setMessage(
+      toAll ? `Applied ${preset.name} to all ${project.clips.length} clips` : `Applied ${preset.name}`,
+    );
   }
 
   function updateRecipe(clipId: string, patch: Partial<EditRecipe>) {
@@ -588,6 +622,22 @@ export default function VideoEditor() {
           <button onClick={handleAddPhotos} disabled={busy || exporting} title="Import stills for stop motion">
             Add photos…
           </button>
+          <button
+            onClick={projectHistory.undo}
+            disabled={!projectHistory.canUndo || exporting}
+            title="Undo (Ctrl/Cmd+Z)"
+            aria-label="Undo"
+          >
+            ↶
+          </button>
+          <button
+            onClick={projectHistory.redo}
+            disabled={!projectHistory.canRedo || exporting}
+            title="Redo (Ctrl/Cmd+Shift+Z)"
+            aria-label="Redo"
+          >
+            ↷
+          </button>
           <button onClick={handleAddMusic} disabled={exporting}>
             {project.music ? 'Change music' : 'Add music…'}
           </button>
@@ -710,6 +760,31 @@ export default function VideoEditor() {
 
         {selectedClip && (
           <ClipInspector
+            presets={
+              <PanelSection title="Look" defaultOpen={!!selectedClip}>
+              <PresetPicker
+                activeId={selectedClip?.presetId ?? null}
+                onApply={(preset) => handleApplyPreset(preset, false)}
+                footer={
+                  project.clips.length > 1 && (
+                    <p className="panel-hint muted">
+                      Applies to the selected clip.{' '}
+                      <button
+                        className="link-button"
+                        onClick={() => {
+                          const preset = PRESETS.find((p) => p.id === selectedClip?.presetId);
+                          if (preset) handleApplyPreset(preset, true);
+                        }}
+                        disabled={!selectedClip?.presetId}
+                      >
+                        Apply to all {project.clips.length} clips
+                      </button>
+                    </p>
+                  )
+                }
+              />
+            </PanelSection>
+            }
             clip={selectedClip}
             source={sources.get(selectedClip.sourceId)}
             projectFrameRate={project.frameRate}

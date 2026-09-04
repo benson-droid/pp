@@ -6,10 +6,15 @@ import { clipDuration } from '../../video/timeline';
 import Slider from '../Slider';
 import PanelSection from '../PanelSection';
 import ToneCurve, { type CurveChannel } from '../ToneCurve';
-import ColorWheel from '../ColorWheel';
+import ColorGradePanel from '../ColorGradePanel';
+import WhiteBalancePanel from '../WhiteBalancePanel';
 import HSLMixerPanel from '../HSLMixer';
 
 interface ClipInspectorProps {
+  /** The preset picker, rendered as the first section. It's passed in
+   * rather than built here because applying a look touches the clip *and*
+   * its frame rate and film settings, which is the parent's business. */
+  presets?: React.ReactNode;
   clip: Clip;
   source: VideoSource | undefined;
   projectFrameRate: number;
@@ -33,6 +38,7 @@ const SPEED_PRESETS = [0.25, 0.5, 1, 1.5, 2, 4];
  * pointed at the clip's recipe.
  */
 export default function ClipInspector({
+  presets,
   clip,
   source,
   projectFrameRate,
@@ -64,6 +70,7 @@ export default function ClipInspector({
 
   return (
     <div className="editor-panel">
+      {presets}
       <PanelSection title="Clip">
         <div className="inspector-source muted">{source?.name ?? 'Missing source'}</div>
         {isStill ? (
@@ -314,21 +321,15 @@ export default function ClipInspector({
         />
       </PanelSection>
 
+      <PanelSection title="White Balance" defaultOpen={false}>
+        <WhiteBalancePanel
+          kelvin={clip.recipe.temperature}
+          tint={clip.recipe.tint}
+          onChange={(patch) => onRecipeChange(patch)}
+        />
+      </PanelSection>
+
       <PanelSection title="Colour" defaultOpen={false}>
-        <Slider
-          label="Temperature"
-          value={clip.recipe.temperature}
-          min={-100}
-          max={100}
-          onChange={(v) => onRecipeChange({ temperature: v })}
-        />
-        <Slider
-          label="Tint"
-          value={clip.recipe.tint}
-          min={-100}
-          max={100}
-          onChange={(v) => onRecipeChange({ tint: v })}
-        />
         <Slider
           label="Saturation"
           value={clip.recipe.saturation}
@@ -354,23 +355,41 @@ export default function ClipInspector({
       </PanelSection>
 
       <PanelSection title="Colour Grading" defaultOpen={false}>
-        <div className="color-wheel-row">
-          <ColorWheel
-            label="Shadows"
-            value={clip.recipe.gradeShadows}
-            onChange={(gradeShadows) => onRecipeChange({ gradeShadows })}
-          />
-          <ColorWheel
-            label="Midtones"
-            value={clip.recipe.gradeMidtones}
-            onChange={(gradeMidtones) => onRecipeChange({ gradeMidtones })}
-          />
-          <ColorWheel
-            label="Highlights"
-            value={clip.recipe.gradeHighlights}
-            onChange={(gradeHighlights) => onRecipeChange({ gradeHighlights })}
-          />
-        </div>
+        <ColorGradePanel
+          shadows={clip.recipe.gradeShadows}
+          midtones={clip.recipe.gradeMidtones}
+          highlights={clip.recipe.gradeHighlights}
+          blending={clip.recipe.gradeBlending}
+          balance={clip.recipe.gradeBalance}
+          onChange={(patch) => onRecipeChange(patch)}
+        />
+      </PanelSection>
+
+      <PanelSection
+        title="Film"
+        defaultOpen={false}
+        modified={clip.film.flicker > 0 || clip.film.gateWeave > 0}
+      >
+        <Slider
+          label="Flicker"
+          value={clip.film.flicker}
+          min={0}
+          max={100}
+          onChange={(v) => onChange({ film: { ...clip.film, flicker: v } })}
+        />
+        <Slider
+          label="Gate weave"
+          value={clip.film.gateWeave}
+          min={0}
+          max={100}
+          onChange={(v) => onChange({ film: { ...clip.film, gateWeave: v } })}
+        />
+        <p className="panel-hint muted">
+          Flicker is the uneven exposure of a hand-wound shutter; gate weave is the frame
+          wandering because the film was never held quite still. Both are steady across a
+          re-render, so the export matches what you see here. Pair them with a low frame rate
+          under Timing.
+        </p>
       </PanelSection>
 
       <PanelSection title="Framing" defaultOpen={false}>

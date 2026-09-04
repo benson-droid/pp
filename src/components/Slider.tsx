@@ -10,6 +10,14 @@ interface SliderProps {
    * to 0, which is neutral for nearly every adjustment here. */
   defaultValue?: number;
   onChange: (value: number) => void;
+  /** Renders the readout. Use when the slider's internal units aren't the
+   * ones a person thinks in — the temperature slider works in mireds so
+   * that its travel is perceptually even, but shows Kelvin. */
+  format?: (value: number) => string;
+  /** Turns typed text back into the slider's units. Required alongside
+   * `format` whenever the two differ, or typing a value would be read in
+   * the wrong units. */
+  parse?: (text: string) => number | null;
 }
 
 /**
@@ -27,6 +35,8 @@ export default function Slider({
   step = 1,
   defaultValue = 0,
   onChange,
+  format,
+  parse,
 }: SliderProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
@@ -45,8 +55,8 @@ export default function Slider({
   const fillWidth = Math.abs(pct - neutralPct);
 
   function commitDraft() {
-    const parsed = Number(draft);
-    if (Number.isFinite(parsed)) {
+    const parsed = parse ? parse(draft) : Number(draft);
+    if (parsed !== null && Number.isFinite(parsed)) {
       onChange(Math.min(max, Math.max(min, parsed)));
     }
     setEditing(false);
@@ -76,11 +86,11 @@ export default function Slider({
             className={`slider-value${value !== defaultValue ? ' changed' : ''}`}
             title="Click to type a value · double-click the label to reset"
             onClick={() => {
-              setDraft(String(value));
+              setDraft(format ? format(value).replace(/[^\d.+-]/g, '') : String(value));
               setEditing(true);
             }}
           >
-            {Number.isInteger(value) ? value : value.toFixed(2)}
+            {format ? format(value) : Number.isInteger(value) ? value : value.toFixed(2)}
           </button>
         )}
       </div>

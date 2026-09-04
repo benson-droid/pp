@@ -49,7 +49,7 @@ export function pasteRecipeOnto(current: EditRecipe): EditRecipe | null {
     const merged: EditRecipe = {
       ...d,
       ...parsed,
-      version: 1,
+      version: 2,
       curve: sanitizeCurve(parsed.curve),
       curveR: sanitizeCurve(parsed.curveR),
       curveG: sanitizeCurve(parsed.curveG),

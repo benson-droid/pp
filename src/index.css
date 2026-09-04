@@ -1473,3 +1473,118 @@ button.primary:hover:not(:disabled) {
 .photo-grid-view:not(.selecting) .photo-tile-select:focus-visible {
   opacity: 1;
 }
+
+/* --- White balance -------------------------------------------------------- */
+
+.wb-readout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.wb-kelvin {
+  font-size: 15px;
+  color: var(--text-h);
+  font-variant-numeric: tabular-nums;
+}
+
+.wb-readout button {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+/* The gradient runs the way the slider does: cool on the left, warm on the
+ * right. That is the inverse of what a blackbody at those temperatures
+ * actually looks like, and it is correct — the control sets the assumed
+ * illuminant, so a higher number warms the picture. */
+.wb-strip {
+  height: 6px;
+  margin-bottom: 10px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #7fb2ff, #cfe0ff, #fff6ec, #ffd9a0, #ffb45c);
+}
+
+.viewport.picking,
+.viewport.picking * {
+  cursor: crosshair;
+}
+
+/* --- Colour grading ------------------------------------------------------- */
+
+.grade-tabs {
+  display: flex;
+  gap: 6px;
+  margin: 4px 0 10px;
+}
+
+.grade-tabs button {
+  position: relative;
+  flex: 1;
+  padding: 6px 4px;
+  font-size: 12px;
+}
+
+.grade-dot {
+  position: absolute;
+  top: 4px;
+  right: 5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.color-wheel.active .color-wheel-label {
+  color: var(--text-h);
+}
+
+.color-wheel.active .color-wheel-dial {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* --- Presets -------------------------------------------------------------- */
+
+.preset-group {
+  margin-bottom: 12px;
+}
+
+.preset-group-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #8a8d96;
+  margin-bottom: 6px;
+}
+
+.preset-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.preset-chip {
+  padding: 6px 11px;
+  font-size: 12px;
+}
+
+.preset-chip.active {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  color: var(--text-h);
+}
+
+.link-button {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  text-decoration: underline;
+  font-size: inherit;
+}
+
+.link-button:disabled {
+  color: #8a8d96;
+  text-decoration: none;
+}

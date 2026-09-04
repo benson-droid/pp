@@ -72,6 +72,31 @@ function drawTitle(
  * across every frame of a preview or an export so nothing is reallocated
  * per frame.
  */
+/**
+ * A deterministic wobble for one frame.
+ *
+ * Deterministic matters: the preview and the export must agree, and
+ * scrubbing back to a frame must show the same frame. A plain Math.random
+ * would make every pass different, and the export would visibly disagree
+ * with what the user approved. This is cheap value noise over the frame
+ * index, smoothed so the movement drifts rather than jitters — real gate
+ * weave is a slow wander, not per-frame static.
+ */
+function hash01(n: number): number {
+  const s = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+
+function smoothNoise(frame: number, seed: number): number {
+  const t = frame * 0.5 + seed * 97.3;
+  const i = Math.floor(t);
+  const f = t - i;
+  const smooth = f * f * (3 - 2 * f);
+  const a = hash01(i + seed * 13.7);
+  const b = hash01(i + 1 + seed * 13.7);
+  return (a + (b - a) * smooth) * 2 - 1; // -1..1
+}
+
 export class TimelineRenderer {
   private color = new ColorRenderer();
   /** Reused buffer for pulling pixels out of the video element. */
@@ -170,12 +195,36 @@ export class TimelineRenderer {
       if (!frame) continue;
       const fw = source.kind === 'image' ? source.width : (frame as HTMLVideoElement).videoWidth;
       const fh = source.kind === 'image' ? source.height : (frame as HTMLVideoElement).videoHeight;
-      const graded = this.gradeFrame(frame, fw, fh, layer.placement.clip.recipe);
+      // Film flicker: a spring-wound camera's shutter timing varies, so
+      // successive frames are not equally exposed. A fraction of a stop is
+      // plenty — more reads as a fault rather than as film.
+      const film = layer.placement.clip.film;
+      const frameIndex = Math.round(time * (project.frameRate || 30));
+      let recipe = layer.placement.clip.recipe;
+      if (film && film.flicker > 0) {
+        const wobble = smoothNoise(frameIndex, 1) * (film.flicker / 100) * 0.22;
+        recipe = { ...recipe, exposure: recipe.exposure + wobble };
+      }
+
+      const graded = this.gradeFrame(frame, fw, fh, recipe);
       if (!graded) continue;
       drewSomething = true;
 
       ctx.save();
       ctx.globalAlpha = layer.opacity;
+
+      // Gate weave: the frame wanders because the film was never held
+      // perfectly still. Overscale slightly first, otherwise shifting the
+      // image exposes black edges.
+      if (film && film.gateWeave > 0) {
+        const amount = film.gateWeave / 100;
+        const dx = smoothNoise(frameIndex, 2) * amount * w * 0.012;
+        const dy = smoothNoise(frameIndex, 3) * amount * h * 0.012;
+        const zoom = 1 + amount * 0.03;
+        ctx.translate(w / 2 + dx, h / 2 + dy);
+        ctx.scale(zoom, zoom);
+        ctx.translate(-w / 2, -h / 2);
+      }
 
       // A wipe reveals the incoming clip (the second layer) left-to-right.
       if (composition.wipe !== null && i === 1) {

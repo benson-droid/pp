@@ -10,6 +10,8 @@
  * a video frame is just a texture.
  */
 import type { EditRecipe } from '../types';
+import type { FilmEffects } from '../lib/presets';
+import { noFilmEffects } from '../lib/presets';
 
 export interface VideoSource {
   id: string;
@@ -85,6 +87,11 @@ export interface Clip {
   titles: TitleOverlay[];
   /** 0..100, applied to this clip's own audio. */
   volume: number;
+  /** Motion-only film artefacts — flicker and gate weave. A still frame
+   * can't wobble, so these live here rather than in the recipe. */
+  film: FilmEffects;
+  /** Which preset was last applied, purely so the UI can show it. */
+  presetId?: string | null;
 }
 
 export interface MusicTrack {
@@ -124,6 +131,8 @@ export function createClip(sourceId: string, source: VideoSource, recipe: EditRe
     transition: defaultTransition(),
     titles: [],
     volume: 100,
+    film: noFilmEffects(),
+    presetId: null,
   };
 }
 
@@ -146,4 +155,7 @@ export function emptyProject(): VideoProject {
   return { clips: [], music: null, frameRate: 30, width: 1920, height: 1080 };
 }
 
-export const FRAME_RATE_PRESETS = [8, 12, 15, 24, 25, 30, 50, 60];
+/** 18 is Super 8's native rate and 16 is silent-era cine — both are here
+ * because the film presets set them, and a rate a preset can produce but
+ * the buttons can't show reads as a broken control. */
+export const FRAME_RATE_PRESETS = [6, 8, 12, 15, 16, 18, 24, 25, 30, 50, 60];

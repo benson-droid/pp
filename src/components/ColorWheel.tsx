@@ -6,6 +6,13 @@ interface ColorWheelProps {
   label: string;
   value: WheelColor;
   onChange: (value: WheelColor) => void;
+  /** When the panel also shows numeric sliders, the per-wheel luminance
+   * slider is redundant — hide it and let the wheel be a pure direction
+   * picker. */
+  compact?: boolean;
+  /** Highlights the wheel whose numbers the sliders below are editing. */
+  active?: boolean;
+  onFocus?: () => void;
 }
 
 const SIZE = 84;
@@ -15,7 +22,14 @@ const CENTER = SIZE / 2;
 /** A compact hue/saturation picker (drag from center outward) plus a
  * luminance slider — one instance each for shadows/midtones/highlights in
  * the Color Grading panel, matching Lightroom's three wheels. */
-export default function ColorWheel({ label, value, onChange }: ColorWheelProps) {
+export default function ColorWheel({
+  label,
+  value,
+  onChange,
+  compact = true,
+  active = false,
+  onFocus,
+}: ColorWheelProps) {
   const wheelRef = useRef<HTMLDivElement>(null);
 
   function updateFromPointer(e: { clientX: number; clientY: number }) {
@@ -32,6 +46,7 @@ export default function ColorWheel({ label, value, onChange }: ColorWheelProps) 
   }
 
   function onPointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    onFocus?.();
     updateFromPointer(e);
     e.currentTarget.setPointerCapture(e.pointerId);
   }
@@ -47,7 +62,7 @@ export default function ColorWheel({ label, value, onChange }: ColorWheelProps) 
   const dotY = CENTER - Math.cos(angleRad) * dotDist;
 
   return (
-    <div className="color-wheel">
+    <div className={`color-wheel${active ? ' active' : ''}`}>
       <div className="color-wheel-label">{label}</div>
       <div
         ref={wheelRef}
@@ -62,7 +77,15 @@ export default function ColorWheel({ label, value, onChange }: ColorWheelProps) 
           style={{ left: dotX, top: dotY, background: `hsl(${value.hue}, 100%, 50%)` }}
         />
       </div>
-      <Slider label="Lum" value={value.lum} min={-100} max={100} onChange={(lum) => onChange({ ...value, lum })} />
+      {!compact && (
+        <Slider
+          label="Lum"
+          value={value.lum}
+          min={-100}
+          max={100}
+          onChange={(lum) => onChange({ ...value, lum })}
+        />
+      )}
     </div>
   );
 }

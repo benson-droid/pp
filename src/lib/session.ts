@@ -235,7 +235,18 @@ export async function loadVideoProject(prompt = false): Promise<RestoredVideoPro
     missing.push(s.name);
   }
 
-  const project = { ...stored.project };
+  // A project saved before film effects existed has clips with no `film`
+  // field, and anything that reads clip.film.flicker would throw on it.
+  // Stored data is always older than the code that reads it, so fill in
+  // what's missing rather than trusting the shape.
+  const project: VideoProject = {
+    ...stored.project,
+    clips: (stored.project.clips ?? []).map((c) => ({
+      ...c,
+      film: c.film ?? { flicker: 0, gateWeave: 0 },
+      presetId: c.presetId ?? null,
+    })),
+  };
   if (project.music && stored.music?.file) {
     project.music = { ...project.music, name: stored.music.name, file: stored.music.file };
   } else if (project.music) {
