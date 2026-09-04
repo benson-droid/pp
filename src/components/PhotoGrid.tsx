@@ -42,7 +42,12 @@ export default function PhotoGrid({
           <strong>{folderName}</strong>
           <span className="muted"> · {photos.length} photos</span>
         </div>
-        <button onClick={onPickAnotherFolder}>Open something else</button>
+        <div className="grid-actions">
+          <span className="muted grid-hint">
+            Tick photos to merge them — panorama, HDR, focus stack or layers
+          </span>
+          <button onClick={onPickAnotherFolder}>Open something else</button>
+        </div>
       </header>
       {photos.length === 0 ? (
         <p className="muted">No .NEF or .jpg files found.</p>
@@ -64,7 +69,14 @@ export default function PhotoGrid({
         <div className="selection-bar">
           <span>
             {selectedPhotos.length} selected
-            {selectedPhotos.length < 2 && <span className="muted"> · pick at least 2 to merge</span>}
+            {selectedPhotos.length < 2 ? (
+              <span className="muted"> · pick at least 2 to merge</span>
+            ) : (
+              <span className="muted">
+                {' '}
+                · splice into a panorama, blend exposures, stack focus or layer them
+              </span>
+            )}
           </span>
           <div className="selection-bar-actions">
             <button onClick={() => setSelected(new Set())}>Clear</button>

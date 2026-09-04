@@ -1356,3 +1356,47 @@ button.primary:hover:not(:disabled) {
 .project-panel {
   width: 260px;
 }
+
+/* --- Drag and drop -------------------------------------------------------- */
+
+.dropzone {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.dropzone-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+  background: rgba(14, 15, 18, 0.82);
+  border: 2px dashed var(--accent);
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+.dropzone-message {
+  padding: 14px 22px;
+  font-size: 15px;
+  color: var(--text-h);
+  background: var(--panel-bg);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+}
+
+/* --- Grid merge hint ------------------------------------------------------ */
+
+.grid-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.grid-hint {
+  font-size: 12px;
+}

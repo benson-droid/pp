@@ -1,6 +1,14 @@
 import { useCallback, useState } from 'react';
 import type { PhotoEntry } from './types';
-import { listPhotos, pickFiles, pickFolderAndListPhotos } from './lib/fileAccess';
+import {
+  listPhotos,
+  photosFromFiles,
+  photosFromHandles,
+  pickFiles,
+  pickFolderAndListPhotos,
+} from './lib/fileAccess';
+import type { DroppedContents } from './lib/dropzone';
+import DropZone from './components/DropZone';
 import FolderPicker from './components/FolderPicker';
 import PhotoGrid from './components/PhotoGrid';
 import Editor from './components/Editor';
@@ -53,6 +61,44 @@ export default function App() {
     }
   }
 
+  /** Accepts a drop of photos and/or folders. A dropped folder becomes the
+   * working directory, which is what gives exports and sidecars a home. */
+  const handleDrop = useCallback(async (contents: DroppedContents) => {
+    setPickError(null);
+    try {
+      if (contents.directory) {
+        const found = await listPhotos(contents.directory);
+        if (found.length === 0) {
+          setPickError('No .NEF or .jpg photos found in that folder.');
+          return;
+        }
+        setDirHandle(contents.directory);
+        setPhotos(found);
+        setSessionStarted(true);
+        return;
+      }
+
+      // Loose files: prefer real handles when the browser gave us them.
+      const found =
+        contents.handles.length > 0
+          ? photosFromHandles(contents.handles)
+          : photosFromFiles(contents.files);
+      if (found.length === 0) {
+        setPickError('No .NEF or .jpg photos in what you dropped.');
+        return;
+      }
+      setDirHandle(null);
+      setPhotos((prev) => {
+        // Dropping onto an open library adds to it rather than replacing.
+        const names = new Set(prev.map((p) => p.name));
+        return [...prev, ...found.filter((f) => !names.has(f.name))];
+      });
+      setSessionStarted(true);
+    } catch (err) {
+      setPickError((err as Error).message);
+    }
+  }, []);
+
   const refreshPhotos = useCallback(async () => {
     if (!dirHandle) return; // Single-file mode has a static list — nothing to re-scan.
     const found = await listPhotos(dirHandle);
@@ -94,7 +140,9 @@ export default function App() {
     return (
       <div className="app-shell">
         {nav}
-        <FolderPicker onPickFolder={handlePickFolder} onPickFiles={handlePickFiles} error={pickError} />
+        <DropZone onDrop={handleDrop} label="Drop photos or a folder">
+          <FolderPicker onPickFolder={handlePickFolder} onPickFiles={handlePickFiles} error={pickError} />
+        </DropZone>
       </div>
     );
   }
@@ -136,6 +184,7 @@ export default function App() {
   return (
     <div className="app-shell">
       {nav}
+      <DropZone onDrop={handleDrop} label="Drop photos or a folder to add them">
       <PhotoGrid
       photos={photos}
       onOpen={setSelected}
@@ -143,6 +192,7 @@ export default function App() {
       folderName={dirHandle ? dirHandle.name : `${photos.length} file${photos.length === 1 ? '' : 's'}`}
         onMerge={setMerging}
       />
+      </DropZone>
     </div>
   );
 }

@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import type { DecodedImage, PhotoEntry } from '../types';
 import { decodeFull } from '../lib/imageDecode';
 import { canvasToBlob } from '../lib/canvasUtils';
-import { JPEG_ACCEPT, beginSave, writeExportedFile } from '../lib/fileAccess';
+import { writeExportedFile } from '../lib/fileAccess';
+import { useOutputFolder } from '../lib/useOutputFolder';
+import OutputFolderPanel from './OutputFolderPanel';
 import { type FloatImage, floatToImageData, imageDataToFloat } from '../lib/pyramid';
 import {
   type BlendMode,
@@ -75,6 +77,7 @@ async function loadAtWorkingSize(photo: PhotoEntry, maxDim: number): Promise<Flo
  * the shared pyramid engine in lib/merge.ts.
  */
 export default function MergeView({ photos, dirHandle, onClose }: MergeViewProps) {
+  const workspace = useOutputFolder();
   const [mode, setMode] = useState<MergeMode>('exposure');
   const [options, setOptions] = useState<MergeOptions>(defaultMergeOptions('exposure'));
   const [quality, setQuality] = useState(1);
@@ -155,8 +158,10 @@ export default function MergeView({ photos, dirHandle, onClose }: MergeViewProps
     const base = photos[0].name.replace(/\.[^.]+$/, '');
     const fileName = `${base}-${mode}.jpg`;
     // Reserved before any await, so the picker still has a live gesture.
-    const target = dirHandle ? null : await beginSave(fileName, JPEG_ACCEPT);
-    if (!dirHandle && !target) return; // cancelled
+    const useWorkspace = workspace.folder !== null;
+    const target = useWorkspace || dirHandle ? null : await workspace.beginExport(fileName);
+    const wsTarget = useWorkspace ? await workspace.beginExport(`merged/${fileName}`) : null;
+    if (!useWorkspace && !dirHandle && !target) return; // cancelled
 
     try {
       const off = new OffscreenCanvas(result.width, result.height);
@@ -165,12 +170,13 @@ export default function MergeView({ photos, dirHandle, onClose }: MergeViewProps
       ctx.putImageData(floatToImageData(result), 0, 0);
       const blob = await canvasToBlob(off, 'image/jpeg', 0.92);
 
-      if (dirHandle) {
+      if (wsTarget) {
+        setMessage(`Saved ${await wsTarget.write(blob)}`);
+      } else if (dirHandle) {
         await writeExportedFile(dirHandle, fileName, blob);
         setMessage(`Saved edited/${fileName}`);
       } else {
-        await target!.write(blob);
-        setMessage(`Saved ${target!.fileName}`);
+        setMessage(`Saved ${await target!.write(blob)}`);
       }
     } catch (err) {
       if ((err as DOMException)?.name === 'AbortError') return;
@@ -360,6 +366,14 @@ export default function MergeView({ photos, dirHandle, onClose }: MergeViewProps
           <button className="primary reset-all" onClick={runMerge} disabled={busy}>
             {busy ? 'Merging…' : result ? 'Merge again' : 'Merge'}
           </button>
+
+          <div className="panel-section">
+            <div className="panel-section-title">Save location</div>
+            <OutputFolderPanel
+              workspace={workspace}
+              fallbackLabel={dirHandle ? 'edited/ next to the originals' : 'wherever you choose'}
+            />
+          </div>
         </div>
       </div>
     </div>

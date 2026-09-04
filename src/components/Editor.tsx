@@ -5,7 +5,9 @@ import { decodeFull } from '../lib/imageDecode';
 import { loadEditRecipe, saveEditRecipe } from '../lib/sidecar';
 import { ColorRenderer, applyGeometry, renderFull } from '../lib/glPipeline';
 import { canvasToBlob } from '../lib/canvasUtils';
-import { JPEG_ACCEPT, beginSave, writeExportedFile } from '../lib/fileAccess';
+import { writeExportedFile } from '../lib/fileAccess';
+import { useOutputFolder } from '../lib/useOutputFolder';
+import OutputFolderPanel from './OutputFolderPanel';
 import { computeHistogram, type HistogramData } from '../lib/histogram';
 import { copyRecipeToClipboard, hasClipboardRecipe, pasteRecipeOnto } from '../lib/editClipboard';
 import { isDefaultCurve } from '../lib/toneCurve';
@@ -59,6 +61,7 @@ export default function Editor({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const workspace = useOutputFolder();
   const [exportMessage, setExportMessage] = useState<string | null>(null);
   const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
   const [cropMode, setCropMode] = useState(false);
@@ -329,8 +332,13 @@ export default function Editor({
     // any await: a full-resolution RAW decode can easily outlast the
     // click's user gesture, and the save picker is only allowed while that
     // gesture is live.
-    const target = dirHandle ? null : await beginSave(fileName, JPEG_ACCEPT);
-    if (!dirHandle && !target) return; // cancelled
+    // A remembered save folder wins: it's an explicit choice. Otherwise
+    // edits land in "edited/" beside the originals, and failing that the
+    // save dialog opens here, while the click's gesture is still alive.
+    const useWorkspace = workspace.folder !== null;
+    const target = useWorkspace || dirHandle ? null : await workspace.beginExport(fileName);
+    const wsTarget = useWorkspace ? await workspace.beginExport(`edited/${fileName}`) : null;
+    if (!useWorkspace && !dirHandle && !target) return; // cancelled
 
     setExporting(true);
     setExportMessage(null);
@@ -338,12 +346,13 @@ export default function Editor({
       const full = await decodeFull(photo, { halfSize: false });
       const geo = renderFull(full, recipe);
       const blob = await canvasToBlob(geo.canvas, 'image/jpeg', 0.92);
-      if (dirHandle) {
+      if (wsTarget) {
+        setExportMessage(`Saved ${await wsTarget.write(blob)}`);
+      } else if (dirHandle) {
         await writeExportedFile(dirHandle, fileName, blob);
         setExportMessage(`Saved edited/${fileName}`);
       } else {
-        await target!.write(blob);
-        setExportMessage(`Saved ${target!.fileName}`);
+        setExportMessage(`Saved ${await target!.write(blob)}`);
       }
     } catch (err) {
       if ((err as DOMException)?.name === 'AbortError') {
@@ -791,6 +800,13 @@ export default function Editor({
                 />
               </>
             )}
+          </PanelSection>
+
+          <PanelSection title="Save location" defaultOpen={false}>
+            <OutputFolderPanel
+              workspace={workspace}
+              fallbackLabel={dirHandle ? `edited/ next to the originals` : 'wherever you choose'}
+            />
           </PanelSection>
 
           <button className="reset-all" onClick={resetAll}>

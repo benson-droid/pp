@@ -7,7 +7,10 @@ import { VideoPool, loadImageSource, loadVideoSource } from '../../video/sources
 import { TimelineRenderer } from '../../video/renderer';
 import { frameCount, layoutTimeline, projectDuration } from '../../video/timeline';
 import { type ExportFormat, type FormatSupport, exportTimeline, probeFormats } from '../../video/export';
-import { beginSave } from '../../lib/fileAccess';
+import { type DroppedContents, isAudioFile, isImageFile, isVideoFile } from '../../lib/dropzone';
+import DropZone from '../DropZone';
+import { useOutputFolder } from '../../lib/useOutputFolder';
+import OutputFolderPanel from '../OutputFolderPanel';
 import Timeline from './Timeline';
 import ClipInspector from './ClipInspector';
 import Slider from '../Slider';
@@ -37,6 +40,10 @@ export default function VideoEditor() {
   const [bitrateMbps, setBitrateMbps] = useState(8);
   /** Seconds each imported photo is held for. */
   const [photoHold, setPhotoHold] = useState(0.25);
+  /** A folder the app remembers between sessions; exports land here
+   * automatically. Point it at a Drive/Dropbox sync folder and saves get
+   * synced to the cloud by the client already on the machine. */
+  const workspace = useOutputFolder();
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
   const [exportStage, setExportStage] = useState<string | null>(null);
@@ -249,6 +256,72 @@ export default function VideoEditor() {
     }));
   }
 
+  /** Imports whatever was dropped: videos become clips, images become
+   * stills, an audio file becomes the music bed. */
+  const handleDrop = useCallback(
+    async (contents: DroppedContents) => {
+      setLoadError(null);
+      setBusy(true);
+      try {
+        const videos = contents.files.filter(isVideoFile);
+        const images = contents.files.filter(isImageFile);
+        const audio = contents.files.find(isAudioFile);
+
+        const nextSources = new Map(sources);
+        const newClips: Clip[] = [];
+
+        for (const file of videos) {
+          try {
+            const source = await loadVideoSource(file);
+            nextSources.set(source.id, source);
+            newClips.push(createClip(source.id, source, defaultEditRecipe()));
+          } catch (err) {
+            setLoadError((err as Error).message);
+          }
+        }
+        // Sorted by name so a numbered burst lands in shooting order.
+        for (const file of [...images].sort((a, b) => a.name.localeCompare(b.name))) {
+          try {
+            const source = await loadImageSource(file);
+            nextSources.set(source.id, source);
+            const clip = createClip(source.id, source, defaultEditRecipe());
+            clip.outPoint = photoHold;
+            newClips.push(clip);
+          } catch (err) {
+            setLoadError((err as Error).message);
+          }
+        }
+
+        if (newClips.length > 0) {
+          setSources(nextSources);
+          setProject((p) => {
+            const first = nextSources.get(newClips[0].sourceId)!;
+            const adopt =
+              p.clips.length === 0
+                ? { width: first.width, height: first.height, frameRate: first.frameRate || 30 }
+                : {};
+            return { ...p, ...adopt, clips: [...p.clips, ...newClips] };
+          });
+          setSelectedClipId((id) => id ?? newClips[0].id);
+        }
+
+        if (audio) {
+          setProject((p) => ({
+            ...p,
+            music: { name: audio.name, file: audio, volume: 40, offset: 0, fadeIn: 1, fadeOut: 2 },
+          }));
+        }
+
+        if (newClips.length === 0 && !audio) {
+          setLoadError('Nothing usable in that drop — expected video, image or audio files.');
+        }
+      } finally {
+        setBusy(false);
+      }
+    },
+    [sources, photoHold],
+  );
+
   async function handleAddMusic() {
     try {
       const [handle] = await window.showOpenFilePicker({
@@ -348,10 +421,13 @@ export default function VideoEditor() {
     const pool = poolRef.current;
     if (!pool) return;
 
-    // Reserve the destination FIRST, while the click is still an active
-    // user gesture. Asking after the render finishes fails with "Must be
-    // handling a user gesture" and throws away the whole export.
-    const target = await beginSave(`timeline.${format}`, {
+    // With a remembered output folder there's nothing to ask: the export
+    // just lands there. Otherwise reserve a destination FIRST, while the
+    // click is still an active user gesture — asking after the render
+    // finishes fails with "Must be handling a user gesture" and throws the
+    // whole export away.
+    const fileName = `timeline-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.${format}`;
+    const target = await workspace.beginExport(`exports/${fileName}`, {
       description: format === 'mp4' ? 'MP4 video' : 'WebM video',
       mime: format === 'mp4' ? 'video/mp4' : 'video/webm',
       extensions: [`.${format}`],
@@ -376,14 +452,14 @@ export default function VideoEditor() {
         },
         shouldCancel: () => cancelRef.current,
       });
-      await target.write(result.blob);
+      const savedAs = await target.write(result.blob);
       // Small exports read as "0.0 MB" otherwise, which looks like failure.
       const size =
         result.blob.size >= 1_000_000
           ? `${(result.blob.size / 1_000_000).toFixed(1)} MB`
           : `${Math.max(1, Math.round(result.blob.size / 1000))} KB`;
       setMessage(
-        `Saved ${target.fileName} — ${result.frames} frames, ${result.durationSeconds.toFixed(1)}s, ${size}${result.hasAudio ? ', with audio' : ''}`,
+        `Saved ${savedAs} — ${result.frames} frames, ${result.durationSeconds.toFixed(1)}s, ${size}${result.hasAudio ? ', with audio' : ''}`,
       );
     } catch (err) {
       if ((err as DOMException)?.name === 'AbortError') {
@@ -439,12 +515,14 @@ export default function VideoEditor() {
 
       <div className="editor-body">
         <div className="video-main">
-          <div className="video-preview-area">
+          <DropZone onDrop={handleDrop} label="Drop video, photos or a folder" className="video-preview-area">
             {loadError && <p className="warning">{loadError}</p>}
             {project.clips.length === 0 && !loadError && (
               <div className="video-empty">
                 <p className="muted">
-                  Add one or more video files to start a timeline. Everything stays on your computer.
+                  Drop video files, photos or a whole folder here — or use the buttons above.
+                  Everything stays on your computer. A run of photos becomes a stop-motion
+                  sequence.
                 </p>
                 <button className="primary" onClick={handleAddVideos}>
                   Add video…
@@ -471,7 +549,7 @@ export default function VideoEditor() {
                 </button>
               </div>
             )}
-          </div>
+          </DropZone>
 
           {project.clips.length > 0 && (
             <div className="video-transport">
@@ -653,6 +731,10 @@ export default function VideoEditor() {
                 </p>
               </PanelSection>
             )}
+
+            <PanelSection title="Save location">
+              <OutputFolderPanel workspace={workspace} fallbackLabel="wherever you choose" />
+            </PanelSection>
 
             <PanelSection title="Export">
               <div className="preset-row">

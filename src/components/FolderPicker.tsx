@@ -33,10 +33,14 @@ export default function FolderPicker({ onPickFolder, onPickFiles, error }: Folde
           Open Files…
         </button>
       </div>
-      <p className="muted" style={{ marginTop: 12 }}>
+      <p className="muted" style={{ marginTop: 14 }}>
+        Or drag photos — or a whole folder — anywhere onto this page.
+      </p>
+      <p className="muted" style={{ marginTop: 12, fontSize: 13 }}>
         Edits are saved automatically in this browser either way. Opening a folder additionally
-        gives exports a home ("edited/" next to your originals) — opening individual files
-        prompts for a save location each time you export instead.
+        gives exports a home ("edited/" next to your originals). You can also set one save folder
+        that's remembered between sessions — point it at a Google Drive or Dropbox sync folder and
+        everything you export gets backed up automatically.
       </p>
     </div>
   );

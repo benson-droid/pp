@@ -179,6 +179,44 @@ export async function saveBlobWithPicker(
   await target.write(blob);
 }
 
+/** Builds PhotoEntry values from handles obtained any way — the file
+ * picker, or a drag-and-drop. Non-photo files are skipped. */
+export function photosFromHandles(handles: FileSystemFileHandle[]): PhotoEntry[] {
+  const photos: PhotoEntry[] = [];
+  for (const handle of handles) {
+    const kind = kindOf(handle.name);
+    if (!kind) continue;
+    photos.push({
+      name: handle.name,
+      kind,
+      fileHandle: handle,
+      sidecarName: sidecarNameFor(handle.name),
+    });
+  }
+  photos.sort((a, b) => a.name.localeCompare(b.name));
+  return photos;
+}
+
+/** Same, for plain File objects (a drop where the browser gave us no
+ * handles). These can be edited and exported, but have no handle to write
+ * a sidecar back through. */
+export function photosFromFiles(files: File[]): PhotoEntry[] {
+  const photos: PhotoEntry[] = [];
+  for (const file of files) {
+    const kind = kindOf(file.name);
+    if (!kind) continue;
+    photos.push({
+      name: file.name,
+      kind,
+      // A minimal handle-alike: everything downstream only calls getFile().
+      fileHandle: { getFile: async () => file, name: file.name } as unknown as FileSystemFileHandle,
+      sidecarName: sidecarNameFor(file.name),
+    });
+  }
+  photos.sort((a, b) => a.name.localeCompare(b.name));
+  return photos;
+}
+
 export async function listPhotos(dirHandle: FileSystemDirectoryHandle): Promise<PhotoEntry[]> {
   const photos: PhotoEntry[] = [];
 
