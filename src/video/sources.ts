@@ -17,7 +17,10 @@ const SEEK_TIMEOUT_MS = 8000;
 /** Loads a still image as a source. Stop-motion works by putting a run of
  * these on the timeline at a short duration each — the project frame rate
  * then decides the cadence. */
-export async function loadImageSource(file: File): Promise<VideoSource> {
+export async function loadImageSource(
+  file: File,
+  handle?: FileSystemFileHandle,
+): Promise<VideoSource> {
   const bitmap = await createImageBitmap(file);
   return {
     id: `src-${Math.random().toString(36).slice(2, 10)}`,
@@ -26,6 +29,7 @@ export async function loadImageSource(file: File): Promise<VideoSource> {
     bitmap,
     url: '',
     file,
+    handle,
     // A still has no inherent length, so it must not be clamped like a
     // video: anything that treats source.duration as a hard limit would
     // otherwise cap a photo clip at whatever default we picked here. The
@@ -38,7 +42,10 @@ export async function loadImageSource(file: File): Promise<VideoSource> {
   };
 }
 
-export async function loadVideoSource(file: File): Promise<VideoSource> {
+export async function loadVideoSource(
+  file: File,
+  handle?: FileSystemFileHandle,
+): Promise<VideoSource> {
   const url = URL.createObjectURL(file);
   const video = document.createElement('video');
   video.src = url;
@@ -69,6 +76,7 @@ export async function loadVideoSource(file: File): Promise<VideoSource> {
     kind: 'video',
     url,
     file,
+    handle,
     duration: Number.isFinite(video.duration) ? video.duration : 0,
     width: video.videoWidth,
     height: video.videoHeight,

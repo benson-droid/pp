@@ -14,106 +14,35 @@
  * site needing to speak to Google at all.
  */
 
-const DB_NAME = 'photo-editor-workspace';
-const DB_VERSION = 1;
-const STORE = 'handles';
+import { HANDLES_STORE, handleUsable, idbDelete, idbGet, idbPut } from './idb';
+
 const KEY = 'output-folder';
 
-let dbPromise: Promise<IDBDatabase> | null = null;
-
-function openDb(): Promise<IDBDatabase> {
-  if (dbPromise) return dbPromise;
-  dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error ?? new Error('Could not open the workspace store'));
-  });
-  return dbPromise;
-}
-
-async function put(key: string, value: unknown): Promise<void> {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite');
-    tx.objectStore(STORE).put(value, key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error ?? new Error('Could not save the workspace'));
-  });
-}
-
-async function get<T>(key: string): Promise<T | null> {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readonly');
-    const req = tx.objectStore(STORE).get(key);
-    req.onsuccess = () => resolve((req.result as T | undefined) ?? null);
-    req.onerror = () => reject(req.error ?? new Error('Could not read the workspace'));
-  });
-}
-
-async function del(key: string): Promise<void> {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite');
-    tx.objectStore(STORE).delete(key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error ?? new Error('Could not clear the workspace'));
-  });
-}
-
-type PermissionState = 'granted' | 'denied' | 'prompt';
-
-interface PermissionCapable {
-  queryPermission?: (d: { mode: 'read' | 'readwrite' }) => Promise<PermissionState>;
-  requestPermission?: (d: { mode: 'read' | 'readwrite' }) => Promise<PermissionState>;
-}
-
 /**
- * Checks whether we can still write to a stored handle.
- *
- * Browsers drop the grant between sessions, so a remembered folder needs
- * re-permitting once per session. `prompt: false` only ever *queries*,
- * which is safe to call on load; asking for the grant itself needs a user
- * gesture, so pass `prompt: true` from a click.
+ * Checks whether we can still write to a stored handle. See `handleUsable`
+ * for why this is query-only unless called from a click.
  */
 export async function ensureWritable(
   handle: FileSystemDirectoryHandle,
   prompt = false,
 ): Promise<boolean> {
-  const h = handle as unknown as PermissionCapable;
-  try {
-    if (h.queryPermission) {
-      const state = await h.queryPermission({ mode: 'readwrite' });
-      if (state === 'granted') return true;
-      if (!prompt) return false;
-    }
-    if (prompt && h.requestPermission) {
-      return (await h.requestPermission({ mode: 'readwrite' })) === 'granted';
-    }
-  } catch {
-    // Treat any failure as "not usable" rather than crashing the app.
-  }
-  return false;
+  return handleUsable(handle, 'readwrite', prompt);
 }
 
 export async function rememberOutputFolder(handle: FileSystemDirectoryHandle): Promise<void> {
-  await put(KEY, handle);
+  await idbPut(HANDLES_STORE, KEY, handle);
 }
 
 export async function loadOutputFolder(): Promise<FileSystemDirectoryHandle | null> {
   try {
-    return await get<FileSystemDirectoryHandle>(KEY);
+    return await idbGet<FileSystemDirectoryHandle>(HANDLES_STORE, KEY);
   } catch {
     return null;
   }
 }
 
 export async function forgetOutputFolder(): Promise<void> {
-  await del(KEY);
+  await idbDelete(HANDLES_STORE, KEY);
 }
 
 /** Prompts for a folder and remembers it. Must be called from a click. */

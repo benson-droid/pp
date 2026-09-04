@@ -4,9 +4,22 @@ interface FolderPickerProps {
   onPickFolder: () => void;
   onPickFiles: () => void;
   error: string | null;
+  /** Name of the folder (or "3 files") from the last session, when it's
+   * still remembered but needs permission again. Null when there's
+   * nothing to resume. */
+  resumeLabel: string | null;
+  onResume: () => void;
+  onForget: () => void;
 }
 
-export default function FolderPicker({ onPickFolder, onPickFiles, error }: FolderPickerProps) {
+export default function FolderPicker({
+  onPickFolder,
+  onPickFiles,
+  error,
+  resumeLabel,
+  onResume,
+  onForget,
+}: FolderPickerProps) {
   const supported = isFileSystemAccessSupported();
   const filesSupported = isOpenFilePickerSupported();
 
@@ -25,6 +38,23 @@ export default function FolderPicker({ onPickFolder, onPickFiles, error }: Folde
         </p>
       )}
       {error && <p className="warning">{error}</p>}
+      {resumeLabel && (
+        <div className="resume-card">
+          <p>
+            Last time you had <strong>{resumeLabel}</strong> open.
+          </p>
+          <div className="button-row" style={{ justifyContent: 'center' }}>
+            <button className="primary" onClick={onResume}>
+              Reopen {resumeLabel}
+            </button>
+            <button onClick={onForget}>Forget it</button>
+          </div>
+          <p className="muted" style={{ fontSize: 12, marginBottom: 0 }}>
+            Your browser asks again each time it's restarted — it won't hand a page access to your
+            files without you saying so.
+          </p>
+        </div>
+      )}
       <div className="button-row" style={{ justifyContent: 'center' }}>
         <button disabled={!supported} onClick={onPickFolder}>
           Open Folder…

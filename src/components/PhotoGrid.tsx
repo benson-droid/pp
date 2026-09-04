@@ -21,6 +21,14 @@ export default function PhotoGrid({
   onMerge,
 }: PhotoGridProps) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  /**
+   * Merging used to be reachable only through a small unlabelled square in
+   * the corner of each thumbnail, which nobody found. It's now an explicit
+   * mode: one obvious button turns it on, and while it's on, clicking a
+   * photo selects it instead of opening it — so the whole tile is the
+   * target rather than a 22px checkbox.
+   */
+  const [selecting, setSelecting] = useState(false);
 
   function toggle(name: string) {
     setSelected((prev) => {
@@ -35,20 +43,46 @@ export default function PhotoGrid({
   // left-to-right selection stitches in the order the shots were taken.
   const selectedPhotos = photos.filter((p) => selected.has(p.name));
 
+  function stopSelecting() {
+    setSelecting(false);
+    setSelected(new Set());
+  }
+
   return (
-    <div className="photo-grid-view">
+    <div className={`photo-grid-view${selecting ? ' selecting' : ''}`}>
       <header className="grid-header">
         <div>
           <strong>{folderName}</strong>
           <span className="muted"> · {photos.length} photos</span>
         </div>
-        <div className="grid-actions">
-          <span className="muted grid-hint">
-            Tick photos to merge them — panorama, HDR, focus stack or layers
-          </span>
-          <button onClick={onPickAnotherFolder}>Open something else</button>
-        </div>
+        <button onClick={onPickAnotherFolder}>Open something else</button>
       </header>
+
+      {photos.length > 1 && (
+        <div className={`merge-cta${selecting ? ' selecting' : ''}`}>
+          <span className="merge-cta-text">
+            {selecting ? (
+              <>
+                <strong>Pick the photos to combine.</strong> Shots of the same scene from different
+                angles become one wide photo; bracketed exposures become one evenly-lit one.
+              </>
+            ) : (
+              <>
+                <strong>Merge photos</strong> — splice overlapping shots into a panorama, blend
+                bracketed exposures, stack for depth of field, or layer them.
+              </>
+            )}
+          </span>
+          {selecting ? (
+            <button onClick={stopSelecting}>Cancel</button>
+          ) : (
+            <button className="primary" onClick={() => setSelecting(true)}>
+              Merge photos…
+            </button>
+          )}
+        </div>
+      )}
+
       {photos.length === 0 ? (
         <p className="muted">No .NEF or .jpg files found.</p>
       ) : (
@@ -57,9 +91,15 @@ export default function PhotoGrid({
             <PhotoThumbnail
               key={photo.name}
               photo={photo}
-              onOpen={() => onOpen(photo)}
+              // While selecting, the whole tile toggles rather than opens —
+              // otherwise picking eight photos means eight precise clicks
+              // on a small square.
+              onOpen={() => (selecting ? toggle(photo.name) : onOpen(photo))}
               selected={selected.has(photo.name)}
-              onToggleSelect={() => toggle(photo.name)}
+              onToggleSelect={() => {
+                if (!selecting) setSelecting(true);
+                toggle(photo.name);
+              }}
             />
           ))}
         </div>
@@ -69,23 +109,16 @@ export default function PhotoGrid({
         <div className="selection-bar">
           <span>
             {selectedPhotos.length} selected
-            {selectedPhotos.length < 2 ? (
-              <span className="muted"> · pick at least 2 to merge</span>
-            ) : (
-              <span className="muted">
-                {' '}
-                · splice into a panorama, blend exposures, stack focus or layer them
-              </span>
-            )}
+            {selectedPhotos.length < 2 && <span className="muted"> · pick at least 2 to merge</span>}
           </span>
           <div className="selection-bar-actions">
-            <button onClick={() => setSelected(new Set())}>Clear</button>
+            <button onClick={stopSelecting}>Clear</button>
             <button
               className="primary"
               disabled={selectedPhotos.length < 2}
               onClick={() => onMerge(selectedPhotos)}
             >
-              Merge…
+              Merge {selectedPhotos.length} photos…
             </button>
           </div>
         </div>

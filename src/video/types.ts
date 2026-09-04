@@ -22,6 +22,10 @@ export interface VideoSource {
   /** Object URL for the underlying file, used by <video> elements. */
   url: string;
   file: File;
+  /** Where the file lives, when the browser gave us a reference to it.
+   * This is what lets a project be reopened after a refresh without
+   * copying the footage into browser storage. */
+  handle?: FileSystemFileHandle;
   duration: number;
   width: number;
   height: number;

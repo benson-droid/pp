@@ -1400,3 +1400,76 @@ button.primary:hover:not(:disabled) {
 .grid-hint {
   font-size: 12px;
 }
+
+/* --- Resume last session -------------------------------------------------- */
+
+.resume-card {
+  margin: 0 0 20px;
+  padding: 16px;
+  background: var(--panel-bg);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+}
+
+.resume-card p {
+  margin-bottom: 10px;
+}
+
+.resume-card .button-row {
+  margin-bottom: 10px;
+}
+
+/* --- Merge call-out ------------------------------------------------------- */
+
+.merge-cta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.merge-cta-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.merge-cta-text strong {
+  color: var(--text-h);
+}
+
+.merge-cta.selecting {
+  border-color: var(--accent);
+}
+
+.photo-tile-select {
+  transition: transform 0.1s ease;
+}
+
+.photo-grid-view.selecting .photo-tile-select {
+  width: 26px;
+  height: 26px;
+  background: rgba(12, 13, 17, 0.9);
+  border-color: var(--accent);
+}
+
+.photo-grid-view.selecting .photo-tile-select.on {
+  background: var(--accent);
+}
+
+/* Now that merging has an explicit button, the per-tile checkbox is a
+ * shortcut rather than the only way in — so it stays out of the way until
+ * the tile is hovered, or until selection mode is on. Keyboard focus
+ * reveals it too, so it isn't mouse-only. */
+.photo-grid-view:not(.selecting) .photo-tile-select {
+  opacity: 0;
+}
+
+.photo-grid-view:not(.selecting) .photo-tile:hover .photo-tile-select,
+.photo-grid-view:not(.selecting) .photo-tile-select:focus-visible {
+  opacity: 1;
+}

@@ -10,6 +10,7 @@ import { type ExportFormat, type FormatSupport, exportTimeline, probeFormats } f
 import { type DroppedContents, isAudioFile, isImageFile, isVideoFile } from '../../lib/dropzone';
 import DropZone from '../DropZone';
 import { useOutputFolder } from '../../lib/useOutputFolder';
+import { clearVideoProject, loadVideoProject, saveVideoProject } from '../../lib/session';
 import OutputFolderPanel from '../OutputFolderPanel';
 import Timeline from './Timeline';
 import ClipInspector from './ClipInspector';
@@ -48,6 +49,12 @@ export default function VideoEditor() {
   const [exportProgress, setExportProgress] = useState(0);
   const [exportStage, setExportStage] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  /** True until the stored project has been read back — saving before then
+   * would overwrite it with the empty starting state. */
+  const [restoring, setRestoring] = useState(true);
+  /** Set when a project is remembered but its media needs permission
+   * again; re-granting is a click, so this becomes a button. */
+  const [resumable, setResumable] = useState<{ clips: number; label: string } | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const poolRef = useRef<VideoPool | null>(null);
@@ -66,6 +73,83 @@ export default function VideoEditor() {
       poolRef.current = null;
     };
   }, []);
+
+  /** Rebuilds sources from stored file references and installs the
+   * project. Shared by the silent restore and the "reopen" button. */
+  const applyStored = useCallback(async (restored: Awaited<ReturnType<typeof loadVideoProject>>) => {
+    if (!restored) return false;
+    const nextSources = new Map<string, VideoSource>();
+    for (const [id, entry] of restored.files) {
+      try {
+        const source =
+          entry.kind === 'image'
+            ? await loadImageSource(entry.file, entry.handle ?? undefined)
+            : await loadVideoSource(entry.file, entry.handle ?? undefined);
+        // Keep the id the clips already point at rather than the fresh
+        // random one the loader generates.
+        nextSources.set(id, { ...source, id });
+      } catch {
+        restored.missing.push(entry.file.name);
+      }
+    }
+    if (nextSources.size === 0) return false;
+    // Drop clips whose media couldn't be reopened, rather than showing a
+    // timeline that renders as black with no explanation.
+    const clips = restored.project.clips.filter((c) => nextSources.has(c.sourceId));
+    if (clips.length === 0) return false;
+    setSources(nextSources);
+    setProject({ ...restored.project, clips });
+    setSelectedClipId(clips[0].id);
+    setResumable(null);
+    if (restored.missing.length > 0) {
+      setMessage(
+        `Reopened your project. ${restored.missing.length} clip${restored.missing.length === 1 ? '' : 's'} couldn't be found (${restored.missing.join(', ')}) and ${restored.missing.length === 1 ? 'was' : 'were'} left out.`,
+      );
+    }
+    return true;
+  }, []);
+
+  // Reopen the last project. As with photos, the permission grant doesn't
+  // survive a refresh, so this only queries it and offers a button when it
+  // has lapsed.
+  useEffect(() => {
+    let cancelled = false;
+    loadVideoProject(false)
+      .then(async (restored) => {
+        if (cancelled || !restored) return;
+        if (restored.needsPermission && restored.files.size === 0) {
+          setResumable({ clips: restored.project.clips.length, label: 'your last project' });
+          return;
+        }
+        await applyStored(restored);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setRestoring(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [applyStored]);
+
+  async function handleResumeProject() {
+    try {
+      const restored = await loadVideoProject(true);
+      if (!(await applyStored(restored))) {
+        setLoadError("Those files aren't available any more — add them again to carry on.");
+        setResumable(null);
+        void clearVideoProject();
+      }
+    } catch (err) {
+      if ((err as DOMException)?.name !== 'AbortError') setLoadError((err as Error).message);
+    }
+  }
+
+  // Save on every change once the restore has finished.
+  useEffect(() => {
+    if (restoring) return;
+    void saveVideoProject(project, sources);
+  }, [project, sources, restoring]);
 
   // Ask the browser which formats it can encode, and default to the best
   // available rather than offering something that will fail.
@@ -172,7 +256,7 @@ export default function VideoEditor() {
       for (const handle of handles) {
         const file = await handle.getFile();
         try {
-          const source = await loadVideoSource(file);
+          const source = await loadVideoSource(file, handle);
           nextSources.set(source.id, source);
           newClips.push(createClip(source.id, source, defaultEditRecipe()));
         } catch (err) {
@@ -216,7 +300,7 @@ export default function VideoEditor() {
       for (const handle of handles) {
         const file = await handle.getFile();
         try {
-          const source = await loadImageSource(file);
+          const source = await loadImageSource(file, handle);
           nextSources.set(source.id, source);
           const clip = createClip(source.id, source, defaultEditRecipe());
           clip.outPoint = photoHold;
@@ -266,13 +350,18 @@ export default function VideoEditor() {
         const videos = contents.files.filter(isVideoFile);
         const images = contents.files.filter(isImageFile);
         const audio = contents.files.find(isAudioFile);
+        // Keeping the handle alongside the File is what lets the project
+        // be reopened after a refresh without copying footage into the
+        // browser's storage.
+        const handleFor = new Map<string, FileSystemFileHandle>();
+        for (const h of contents.handles) handleFor.set(h.name, h);
 
         const nextSources = new Map(sources);
         const newClips: Clip[] = [];
 
         for (const file of videos) {
           try {
-            const source = await loadVideoSource(file);
+            const source = await loadVideoSource(file, handleFor.get(file.name));
             nextSources.set(source.id, source);
             newClips.push(createClip(source.id, source, defaultEditRecipe()));
           } catch (err) {
@@ -282,7 +371,7 @@ export default function VideoEditor() {
         // Sorted by name so a numbered burst lands in shooting order.
         for (const file of [...images].sort((a, b) => a.name.localeCompare(b.name))) {
           try {
-            const source = await loadImageSource(file);
+            const source = await loadImageSource(file, handleFor.get(file.name));
             nextSources.set(source.id, source);
             const clip = createClip(source.id, source, defaultEditRecipe());
             clip.outPoint = photoHold;
@@ -519,6 +608,33 @@ export default function VideoEditor() {
             {loadError && <p className="warning">{loadError}</p>}
             {project.clips.length === 0 && !loadError && (
               <div className="video-empty">
+                {resumable && (
+                  <div className="resume-card">
+                    <p>
+                      You had a project here with{' '}
+                      <strong>
+                        {resumable.clips} clip{resumable.clips === 1 ? '' : 's'}
+                      </strong>
+                      .
+                    </p>
+                    <div className="button-row" style={{ justifyContent: 'center' }}>
+                      <button className="primary" onClick={handleResumeProject}>
+                        Reopen it
+                      </button>
+                      <button
+                        onClick={() => {
+                          void clearVideoProject();
+                          setResumable(null);
+                        }}
+                      >
+                        Start fresh
+                      </button>
+                    </div>
+                    <p className="muted" style={{ fontSize: 12, marginBottom: 0 }}>
+                      Your browser asks for access to the footage again each time it restarts.
+                    </p>
+                  </div>
+                )}
                 <p className="muted">
                   Drop video files, photos or a whole folder here — or use the buttons above.
                   Everything stays on your computer. A run of photos becomes a stop-motion

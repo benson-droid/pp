@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { PhotoEntry } from './types';
 import {
   listPhotos,
@@ -8,6 +8,12 @@ import {
   pickFolderAndListPhotos,
 } from './lib/fileAccess';
 import type { DroppedContents } from './lib/dropzone';
+import {
+  type RestoredPhotoSession,
+  clearPhotoSession,
+  loadPhotoSession,
+  savePhotoSession,
+} from './lib/session';
 import DropZone from './components/DropZone';
 import FolderPicker from './components/FolderPicker';
 import PhotoGrid from './components/PhotoGrid';
@@ -29,6 +35,62 @@ export default function App() {
   const [pickError, setPickError] = useState<string | null>(null);
   /** Non-empty while the merge view is open. */
   const [merging, setMerging] = useState<PhotoEntry[]>([]);
+  /** Set when the last session's folder is still remembered but the
+   * browser has dropped the permission grant — re-granting needs a click,
+   * so this becomes a "reopen" button rather than happening silently. */
+  const [resumable, setResumable] = useState<RestoredPhotoSession | null>(null);
+  const [restoring, setRestoring] = useState(true);
+
+  /** Applies a restored (or freshly re-permitted) session. */
+  const applySession = useCallback((s: RestoredPhotoSession) => {
+    setDirHandle(s.dirHandle);
+    setPhotos(s.photos);
+    setSessionStarted(true);
+    setResumable(null);
+    if (s.openPhoto) {
+      const match = s.photos.find((p) => p.name === s.openPhoto);
+      if (match) setSelected(match);
+    }
+  }, []);
+
+  // Reopen whatever was open last time. The permission grant does not
+  // survive a refresh, so this can only ever *query* it: still granted and
+  // we go straight back to the grid, lapsed and we offer a button.
+  useEffect(() => {
+    let cancelled = false;
+    loadPhotoSession(false)
+      .then((s) => {
+        if (cancelled || !s) return;
+        if (s.needsPermission) setResumable(s);
+        else applySession(s);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setRestoring(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [applySession]);
+
+  /** The button shown when the grant lapsed — a click is what lets the
+   * browser ask. */
+  async function handleResume() {
+    try {
+      const s = await loadPhotoSession(true);
+      if (s && !s.needsPermission) applySession(s);
+      else setPickError('That folder is no longer available — open it again below.');
+    } catch (err) {
+      if ((err as DOMException)?.name !== 'AbortError') setPickError((err as Error).message);
+    }
+  }
+
+  // Remember what's open. Guarded on `restoring` so the initial empty
+  // state can't overwrite the session before it has been read back.
+  useEffect(() => {
+    if (restoring) return;
+    void savePhotoSession(dirHandle, photos, selected?.name ?? null);
+  }, [dirHandle, photos, selected, restoring]);
 
   async function handlePickFolder() {
     setPickError(null);
@@ -106,6 +168,8 @@ export default function App() {
   }, [dirHandle]);
 
   function handleStartOver() {
+    void clearPhotoSession();
+    setResumable(null);
     setDirHandle(null);
     setPhotos([]);
     setSelected(null);
@@ -141,7 +205,17 @@ export default function App() {
       <div className="app-shell">
         {nav}
         <DropZone onDrop={handleDrop} label="Drop photos or a folder">
-          <FolderPicker onPickFolder={handlePickFolder} onPickFiles={handlePickFiles} error={pickError} />
+          <FolderPicker
+            onPickFolder={handlePickFolder}
+            onPickFiles={handlePickFiles}
+            error={pickError}
+            resumeLabel={resumable?.label ?? null}
+            onResume={handleResume}
+            onForget={() => {
+              void clearPhotoSession();
+              setResumable(null);
+            }}
+          />
         </DropZone>
       </div>
     );
